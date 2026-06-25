@@ -6,12 +6,12 @@
 
 ## v1.0 criteria
 
-_Define before tagging v0.1.0:_
+The bar for tagging cmdit v1.0 (freeze the public API). Filled in as the 0.1 → 0.3 arc lands:
 
-- [ ] Public API frozen — every exported symbol documented and tested
-- [ ] Test coverage adequate for the surface area
+- [ ] Public API frozen — every exported symbol documented and tested (gate: once 0.3.0 verbs land and the surface stops growing)
+- [ ] Test coverage adequate for the surface area (0.1.0: 26/26 over the pure parser core; extend per milestone)
 - [ ] Benchmarks captured in `docs/benchmarks.md`
-- [ ] At least one downstream consumer green
+- [x] At least one downstream consumer green — **kii 1.1.0** (the re-fold; 468/468 tests, render verified)
 - [ ] CHANGELOG complete from v0.1.0 onward
 - [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`)
 

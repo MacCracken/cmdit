@@ -41,8 +41,10 @@ Surfaced by the 2026-06-25 ecosystem CLI review (`agnosticos/docs/development/pl
 
 ## Consumers
 
-_None yet — **kii** is the planned first re-fold (drops its in-repo flag-set
-wrapper for `[deps.cmdit]`)._
+- **kii 1.1.0** — re-fold complete (2026-06-25): dropped its hand-rolled flag-set on
+  stdlib `flags` + `build_argv_array` for `[deps.cmdit]`; `cmdit_new`/`cmdit_parse`/
+  `cmdit_get_*`/`cmdit_positional` + auto `--help`/`--version`. 468/468 tests green,
+  rendering verified. The first consumer + the faithful-extraction proof.
 
 ## Next
 
