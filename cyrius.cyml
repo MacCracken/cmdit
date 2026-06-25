@@ -1,0 +1,20 @@
+[package]
+name = "cmdit"
+version = "${file:VERSION}"
+description = "cmdit — sovereign CLI / argument-parsing library (getopt-long), productized + extended from the stdlib flags parser"
+license = "GPL-3.0-only"
+language = "cyrius"
+cyrius = "6.2.44"
+
+[build]
+entry = "programs/smoke.cyr"
+output = "build/cmdit-smoke"
+
+[lib]
+modules = ["src/cmdit.cyr"]
+
+[deps]
+# "args" provides args_init/argc/argv — needed by cmdit_argv/cmdit_parse (the
+# /proc argv read). Pure consumers that pass their own array to cmdit_parse_argv
+# don't need it.
+stdlib = ["string", "fmt", "alloc", "io", "vec", "str", "syscalls", "args", "assert", "bench"]

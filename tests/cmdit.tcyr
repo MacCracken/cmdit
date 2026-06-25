@@ -1,0 +1,110 @@
+# cmdit test suite — drives the PURE parser core (cmdit_parse_argv) with
+# synthetic argv arrays (no /proc), the same testability the survey found in
+# takumi/yo/thoth. cmdit is stdlib-only, so the entry includes its stdlib
+# explicitly (cyrius only auto-prepends stdlib for projects with external deps).
+include "lib/vec.cyr"      # vec_get (transitively referenced by string/alloc)
+include "lib/args.cyr"     # pulls syscalls + alloc (the synthetic argv arrays use alloc)
+include "lib/string.cyr"   # strlen (cmdit help/error paths)
+include "lib/assert.cyr"   # test_group / assert / assert_summary
+include "src/cmdit.cyr"
+
+# cstr equality (both NUL-terminated)
+fn cstreq(a, b): i64 {
+    var i = 0;
+    while (load8(a + i) != 0 && load8(b + i) != 0) {
+        if (load8(a + i) != load8(b + i)) { return 0; }
+        i = i + 1;
+    }
+    if (load8(a + i) != load8(b + i)) { return 0; }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("parse: bool / int / str + positional (-c 5 --name bob file.txt)");
+    var h = cmdit_new("t");
+    var fL = cmdit_bool(h, 0, "loud", "");
+    var fC = cmdit_int(h, 99, "count", 1, "");      # -c
+    var fN = cmdit_str(h, 110, "name", 0, "");      # -n
+    var av = alloc(7 * 8);
+    store64(av + 0*8, "t"); store64(av + 1*8, "--loud"); store64(av + 2*8, "-c");
+    store64(av + 3*8, "5"); store64(av + 4*8, "--name"); store64(av + 5*8, "bob");
+    store64(av + 6*8, "file.txt");
+    assert(cmdit_parse_argv(h, 7, av) == CMDIT_OK, "parse returns CMDIT_OK");
+    assert(cmdit_get_bool(h, fL) == 1, "--loud set to 1");
+    assert(cmdit_get_int(h, fC) == 5, "-c 5 parsed");
+    assert(cstreq(cmdit_get_str(h, fN), "bob") == 1, "--name bob parsed");
+    assert(cmdit_positional_count(h) == 1, "one positional");
+    assert(cstreq(cmdit_positional(h, 0), "file.txt") == 1, "positional = file.txt");
+
+    test_group("parse: --key=value attached form");
+    var h2 = cmdit_new("t");
+    var c2 = cmdit_int(h2, 99, "count", 1, "");
+    var av2 = alloc(2 * 8); store64(av2, "t"); store64(av2 + 8, "--count=7");
+    assert(cmdit_parse_argv(h2, 2, av2) == CMDIT_OK, "parse OK");
+    assert(cmdit_get_int(h2, c2) == 7, "--count=7 parsed");
+
+    test_group("parse: -- terminator stops flag parsing");
+    var h3 = cmdit_new("t");
+    var l3 = cmdit_bool(h3, 0, "loud", "");
+    var av3 = alloc(3 * 8); store64(av3, "t"); store64(av3 + 8, "--"); store64(av3 + 16, "--loud");
+    assert(cmdit_parse_argv(h3, 3, av3) == CMDIT_OK, "parse OK");
+    assert(cmdit_get_bool(h3, l3) == 0, "--loud after -- NOT parsed as flag");
+    assert(cmdit_positional_count(h3) == 1, "one positional");
+    assert(cstreq(cmdit_positional(h3, 0), "--loud") == 1, "positional captured verbatim");
+
+    test_group("parse: lone '-' is a positional (stdin convention)");
+    var h4 = cmdit_new("t");
+    var av4 = alloc(2 * 8); store64(av4, "t"); store64(av4 + 8, "-");
+    assert(cmdit_parse_argv(h4, 2, av4) == CMDIT_OK, "parse OK");
+    assert(cmdit_positional_count(h4) == 1, "lone dash -> positional");
+
+    test_group("error: unknown flag -> CMDIT_ERR_UNKNOWN");
+    var h5 = cmdit_new("t");
+    var av5 = alloc(2 * 8); store64(av5, "t"); store64(av5 + 8, "--nope");
+    assert(cmdit_parse_argv(h5, 2, av5) == CMDIT_RESULT_ERR, "unknown -> RESULT_ERR");
+    assert(cmdit_error(h5) == CMDIT_ERR_UNKNOWN, "error code = UNKNOWN");
+
+    test_group("error: missing value for last arg -> MISSING_VALUE");
+    var h6 = cmdit_new("t");
+    var n6 = cmdit_str(h6, 110, "name", 0, "");
+    var av6 = alloc(2 * 8); store64(av6, "t"); store64(av6 + 8, "--name");
+    assert(cmdit_parse_argv(h6, 2, av6) == CMDIT_RESULT_ERR, "missing value -> RESULT_ERR");
+    assert(cmdit_error(h6) == CMDIT_ERR_MISSING_VALUE, "error code = MISSING_VALUE");
+
+    test_group("error: non-numeric int -> BAD_INT");
+    var h7 = cmdit_new("t");
+    var c7 = cmdit_int(h7, 99, "count", 1, "");
+    var av7 = alloc(3 * 8); store64(av7, "t"); store64(av7 + 8, "-c"); store64(av7 + 16, "abc");
+    assert(cmdit_parse_argv(h7, 3, av7) == CMDIT_RESULT_ERR, "bad int -> RESULT_ERR");
+    assert(cmdit_error(h7) == CMDIT_ERR_BAD_INT, "error code = BAD_INT");
+
+    test_group("error: bundled/attached short -> BUNDLED");
+    var h8 = cmdit_new("t");
+    var av8 = alloc(2 * 8); store64(av8, "t"); store64(av8 + 8, "-xy");
+    assert(cmdit_parse_argv(h8, 2, av8) == CMDIT_RESULT_ERR, "bundled -> RESULT_ERR");
+    assert(cmdit_error(h8) == CMDIT_ERR_BUNDLED, "error code = BUNDLED");
+
+    test_group("auto: --help short-circuits to CMDIT_HELP");
+    var h9 = cmdit_new("t");
+    var av9 = alloc(2 * 8); store64(av9, "t"); store64(av9 + 8, "--help");
+    assert(cmdit_parse_argv(h9, 2, av9) == CMDIT_HELP, "--help -> CMDIT_HELP");
+
+    test_group("auto: -V short-circuits to CMDIT_VERSION");
+    var h10 = cmdit_new("t");
+    var av10 = alloc(2 * 8); store64(av10, "t"); store64(av10 + 8, "-V");
+    assert(cmdit_parse_argv(h10, 2, av10) == CMDIT_VERSION, "-V -> CMDIT_VERSION");
+
+    test_group("defaults: absent flag keeps its registered default");
+    var h11 = cmdit_new("t");
+    var c11 = cmdit_int(h11, 99, "count", 42, "");
+    var av11 = alloc(1 * 8); store64(av11, "t");
+    assert(cmdit_parse_argv(h11, 1, av11) == CMDIT_OK, "parse OK");
+    assert(cmdit_get_int(h11, c11) == 42, "default 42 preserved");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

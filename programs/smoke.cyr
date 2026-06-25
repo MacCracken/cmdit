@@ -1,0 +1,51 @@
+# cmdit smoke / demo — proves the library compiles + links end-to-end and shows
+# real-argv parsing. Build: cyrius build programs/smoke.cyr build/cmdit-smoke
+# Try:   ./build/cmdit-smoke --name bob -c 3 --loud file.txt
+#        ./build/cmdit-smoke --help        ./build/cmdit-smoke --version
+#
+# cmdit is a stdlib-only project (no external [deps.X]), so `cyrius build` does
+# not auto-prepend stdlib — the entry includes what it uses explicitly (the
+# tarka-test.cyr pattern). Consumers of dist/cmdit.cyr get stdlib auto-prepended
+# via their own dep resolution.
+include "lib/vec.cyr"      # vec_get (transitively referenced by string/alloc)
+include "lib/args.cyr"     # args_init / argc / argv (pulls syscalls + alloc)
+include "lib/string.cyr"   # strlen
+include "lib/fmt.cyr"      # fmt_int
+include "src/cmdit.cyr"
+
+fn _putc(ch): i64 { var b[8]; store8(&b, ch); sys_write(1, &b, 1); return 0; }
+fn puts(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
+
+fn main(): i64 {
+    var h = cmdit_new("cmdit-smoke");
+    var f_name  = cmdit_str (h, 110, "name", 0, "a name");              # -n / --name
+    var f_count = cmdit_int (h, 99, "count", 1, "repeat count");        # -c / --count
+    var f_loud  = cmdit_bool(h, 0, "loud", "be loud (no short form)");  # --loud
+
+    var r = cmdit_parse(h);
+    if (r == CMDIT_HELP)    { cmdit_help(h); return CMDIT_EXIT_OK; }
+    if (r == CMDIT_VERSION) { return cmdit_version(h, "cmdit 0.1.0"); }
+    if (r == CMDIT_RESULT_ERR) { cmdit_print_error(h); cmdit_help(h); return CMDIT_EXIT_USAGE; }
+
+    puts("cmdit smoke: parsed OK\n");
+    puts("  name  = ");
+    var nm = cmdit_get_str(h, f_name);
+    if (nm != 0) { puts(nm); } else { puts("(none)"); }
+    _putc(10);
+    puts("  count = "); fmt_int(cmdit_get_int(h, f_count)); _putc(10);
+    puts("  loud  = "); fmt_int(cmdit_get_bool(h, f_loud)); _putc(10);
+    puts("  positionals: "); fmt_int(cmdit_positional_count(h)); _putc(10);
+    var i = 0;
+    while (i < cmdit_positional_count(h)) {
+        puts("    "); puts(cmdit_positional(h, i)); _putc(10);
+        i = i + 1;
+    }
+    return CMDIT_EXIT_OK;
+}
+
+# BARE-CALL entry (NOT module-scope `var r = main();`) + sys_exit() — correct on
+# host AND agnos: a module-scope `var r = main()` runs main during gvar-init,
+# before cycc's init-rsp capture, so argc/argv read 0/null on agnos. sys_exit
+# wraps SYS_EXIT (0 on agnos, 60 on Linux). See docs/guides.
+fn _entry(): i64 { var r = main(); sys_exit(r); return 0; }
+_entry();
