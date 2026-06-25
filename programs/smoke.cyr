@@ -1,6 +1,10 @@
 # cmdit smoke / demo — proves the library compiles + links end-to-end and shows
-# real-argv parsing. Build: cyrius build programs/smoke.cyr build/cmdit-smoke
-# Try:   ./build/cmdit-smoke --name bob -c 3 --loud file.txt
+# real-argv parsing, now exercising the 0.2.0 flag modifiers.
+# Build: cyrius build programs/smoke.cyr build/cmdit-smoke
+# Try:   ./build/cmdit-smoke --name bob -c 3 --loud --color always -H 'A: 1' -H 'B: 2' file.txt
+#        ./build/cmdit-smoke --color purple        # -> BAD_ENUM, names the flag + valid set
+#        ./build/cmdit-smoke -c 99                  # -> OUT_OF_RANGE (range 1..10)
+#        CMDIT_NAME=env-bob ./build/cmdit-smoke     # -> name falls back to the env var
 #        ./build/cmdit-smoke --help        ./build/cmdit-smoke --version
 #
 # cmdit is a stdlib-only project (no external [deps.X]), so `cyrius build` does
@@ -11,6 +15,7 @@ include "lib/vec.cyr"      # vec_get (transitively referenced by string/alloc)
 include "lib/args.cyr"     # args_init / argc / argv (pulls syscalls + alloc)
 include "lib/string.cyr"   # strlen
 include "lib/fmt.cyr"      # fmt_int
+include "lib/io.cyr"       # getenv (cmdit_env / cmdit_finalize)
 include "src/cmdit.cyr"
 
 fn _putc(ch): i64 { var b[8]; store8(&b, ch); sys_write(1, &b, 1); return 0; }
@@ -18,22 +23,35 @@ fn puts(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
 
 fn main(): i64 {
     var h = cmdit_new("cmdit-smoke");
-    var f_name  = cmdit_str (h, 110, "name", 0, "a name");              # -n / --name
-    var f_count = cmdit_int (h, 99, "count", 1, "repeat count");        # -c / --count
-    var f_loud  = cmdit_bool(h, 0, "loud", "be loud (no short form)");  # --loud
+    var f_name  = cmdit_str (h, 110, "name", 0, "a name (env: CMDIT_NAME)");      # -n / --name
+    cmdit_env(h, f_name, "CMDIT_NAME");                                           #   env fallback
+    var f_count = cmdit_int (h, 99, "count", 1, "repeat count (1..10)");          # -c / --count
+    cmdit_range(h, f_count, 1, 10);                                              #   bounded
+    var f_loud  = cmdit_bool(h, 0, "loud", "be loud (no short form)");           # --loud
+    var f_color = cmdit_enum(h, 0, "color", "auto", "auto|always|never", "when to colorize");
+    var f_hdr   = cmdit_repeat(h, 72, "header", "add a header (repeatable)");     # -H / --header
 
     var r = cmdit_parse(h);
     if (r == CMDIT_HELP)    { cmdit_help(h); return CMDIT_EXIT_OK; }
-    if (r == CMDIT_VERSION) { return cmdit_version(h, "cmdit 0.1.0"); }
+    if (r == CMDIT_VERSION) { return cmdit_version(h, "cmdit 0.2.0"); }
     if (r == CMDIT_RESULT_ERR) { cmdit_print_error(h); cmdit_help(h); return CMDIT_EXIT_USAGE; }
 
     puts("cmdit smoke: parsed OK\n");
     puts("  name  = ");
     var nm = cmdit_get_str(h, f_name);
     if (nm != 0) { puts(nm); } else { puts("(none)"); }
+    if (cmdit_seen(h, f_name) == 1) { puts("  [set]"); } else { puts("  [default]"); }
     _putc(10);
     puts("  count = "); fmt_int(cmdit_get_int(h, f_count)); _putc(10);
     puts("  loud  = "); fmt_int(cmdit_get_bool(h, f_loud)); _putc(10);
+    puts("  color = "); puts(cmdit_get_str(h, f_color));
+    puts("  (index "); fmt_int(cmdit_get_enum(h, f_color)); puts(")"); _putc(10);
+    puts("  headers: "); fmt_int(cmdit_repeat_count(h, f_hdr)); _putc(10);
+    var hi = 0;
+    while (hi < cmdit_repeat_count(h, f_hdr)) {
+        puts("    "); puts(cmdit_repeat_get(h, f_hdr, hi)); _putc(10);
+        hi = hi + 1;
+    }
     puts("  positionals: "); fmt_int(cmdit_positional_count(h)); _putc(10);
     var i = 0;
     while (i < cmdit_positional_count(h)) {

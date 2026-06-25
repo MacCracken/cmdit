@@ -4,6 +4,73 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - Unreleased
+
+**Flag modifiers (M2).** Five append-only parse-loop primitives that subsume the
+patterns the 2026-06-25 ecosystem survey found hand-rolled across the consumer
+repos (re-verified site-by-site against attn11/owl/agnova/cyim/phylax/whirl/
+agora/bannermanor/chakshu/ark before landing). Types stay byte-compatible
+(`CMDIT_BOOL/INT/STR` = {0,1,2}); the entry struct grows 48→104 B and the error
+taxonomy grows — both append-only, old offsets/codes untouched.
+
+### Added
+- **`cmdit_enum`** — choice flags. `'|'`-delimited `choices` (e.g.
+  `"auto|always|never"`); the parsed value must be a member or parse fails with
+  `CMDIT_ERR_BAD_ENUM`. **`cmdit_get_enum`** returns the 0-based matched index
+  (the dispatch every consumer re-derived; attn11 `cfg_*` 0..3, owl 0..2, cyim
+  1..6); `cmdit_get_str` still returns the raw choice. Subsumes the nested-streq
+  validation in attn11/owl/agnova/cyim/phylax.
+- **`cmdit_repeat`** — repeatable flags. Each `--flag value` occurrence appends
+  to a per-flag list (cap `CMDIT_REPEAT_MAX` = 64, silently capped like
+  positionals); **`cmdit_repeat_count`** / **`cmdit_repeat_get`** read it, and
+  `cmdit_get_str` gives a last-wins scalar view. Subsumes whirl's `-H` accumulator.
+- **`cmdit_required`** — required flags (post-registration marker, any type incl.
+  bool). A new **SEEN** bit (set by CLI parse or env) distinguishes absent from
+  explicit-false, so confirmation bools like agnova `--i-mean-it` work; absent at
+  finalize → `CMDIT_ERR_REQUIRED_MISSING`. **`cmdit_seen`** exposes the bit.
+  Subsumes agora `--handle` / agnova `--device`/`--user`/`--i-mean-it` sentinel checks.
+- **`cmdit_range`** — inclusive int bounds `[min,max]`, **rejected** (not clamped)
+  → `CMDIT_ERR_OUT_OF_RANGE`. Subsumes bannermanor `--width`/`--pad`, attn11
+  `--layers`/`--mtp`/`--bpe` caps.
+- **`cmdit_env`** — environment-variable fallback (post-registration marker). At
+  finalize, an un-SEEN flag draws from `getenv(env_name)`: bool = presence
+  (`NO_COLOR`-style), int/str/enum = value (set-but-empty ignored). CLI always
+  wins; env can satisfy required; bad env values are **non-fatal** (fall through
+  to the default). Subsumes single flag-bound vars (`NO_COLOR`, `ARK_CONFIG`).
+- **`cmdit_finalize`** — the impure post-parse stage (env fallback then required
+  check). Kept OUT of `cmdit_parse_argv` so the pure synthetic-argv core stays
+  `/proc`- and env-free; **`cmdit_parse`** now chains `parse_argv → finalize` on a
+  clean parse (help/version still short-circuit first).
+- **Error taxonomy** — `CMDIT_ERR_REQUIRED_MISSING=5` / `BAD_ENUM=6` /
+  `OUT_OF_RANGE=7` (0.3.0 reserves `UNKNOWN_VERB=8`).
+- **Flag-named errors** — `cmdit_print_error` now names the offending flag
+  (`<prog>: --color: invalid value (expected auto|always|never)`) for
+  value/modifier errors via a new ctx `err_entry`, matching the near-universal
+  convention in agora/bannermanor/cyim/attn11. `UNKNOWN` stays generic; no `fmt`
+  dependency (numeric range bounds are not rendered). **`cmdit_err_flag`** exposes
+  the offending flag's index for consumer-rendered messages.
+- **Generated help** — enum renders `<a|b|c>`, repeat appends `...`, required
+  appends `(required)` (all string-only, no `fmt`).
+- **Tests** — `tests/cmdit.tcyr` grown 26 → **88 assertions** over the modifiers,
+  including a purity test asserting `cmdit_parse_argv` ignores a set env var
+  (env only applies at `cmdit_finalize`).
+
+### Changed
+- Entry struct 48 → 104 B; context 96 → 104 B (both append-only). `CMDIT_FLAGS_MAX`
+  unchanged at 64.
+- **New consumer dep**: stdlib `"io"` (for `getenv`) is now referenced
+  unconditionally by `cmdit_parse` (via `cmdit_finalize`). Pure callers that drive
+  `cmdit_parse_argv` directly and never call `cmdit_finalize` link `getenv` but
+  never invoke it.
+
+### Scope (not subsumed — stays caller-side)
+- Dynamic / large enum lists (owl theme/lang: 45 langs + runtime user themes).
+- Cross-field / modulo ranges (attn11 `--rope-dim<=d_model`, `rope_dim%2`,
+  `--expert-topk<=experts`).
+- Pure-env cascades with no associated flag (`OWL_PAGER>PAGER`, config-path
+  builders, `USER>euid`, `ARK_CONFIG`'s privilege gate).
+- Positional-count/`required`-positional validation — candidate for 0.3.0.
+
 ## [0.1.0] - Unreleased
 
 **The extraction cut.** cmdit is the stdlib flag parser (`lib/flags.cyr`)

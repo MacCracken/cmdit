@@ -5,6 +5,8 @@
 include "lib/vec.cyr"      # vec_get (transitively referenced by string/alloc)
 include "lib/args.cyr"     # pulls syscalls + alloc (the synthetic argv arrays use alloc)
 include "lib/string.cyr"   # strlen (cmdit help/error paths)
+include "lib/fmt.cyr"      # resolves io.cyr's fmt_int refs
+include "lib/io.cyr"       # getenv (cmdit_env / cmdit_finalize)
 include "lib/assert.cyr"   # test_group / assert / assert_summary
 include "src/cmdit.cyr"
 
@@ -102,6 +104,251 @@ fn main() {
     var av11 = alloc(1 * 8); store64(av11, "t");
     assert(cmdit_parse_argv(h11, 1, av11) == CMDIT_OK, "parse OK");
     assert(cmdit_get_int(h11, c11) == 42, "default 42 preserved");
+
+    # --- 0.2.0 flag modifiers ------------------------------------------------
+
+    test_group("enum: valid choice accepted; get_str + get_enum index");
+    var he = cmdit_new("t");
+    var fe = cmdit_enum(he, 0, "color", "auto", "auto|always|never", "");
+    var ave = alloc(3 * 8); store64(ave, "t"); store64(ave + 8, "--color"); store64(ave + 16, "never");
+    assert(cmdit_parse_argv(he, 3, ave) == CMDIT_OK, "enum valid -> OK");
+    assert(cstreq(cmdit_get_str(he, fe), "never") == 1, "raw choice = never");
+    assert(cmdit_get_enum(he, fe) == 2, "enum index of never = 2");
+
+    test_group("enum: =value form + first/middle index");
+    var he2 = cmdit_new("t");
+    var fe2 = cmdit_enum(he2, 0, "color", "auto", "auto|always|never", "");
+    var ave2 = alloc(2 * 8); store64(ave2, "t"); store64(ave2 + 8, "--color=always");
+    assert(cmdit_parse_argv(he2, 2, ave2) == CMDIT_OK, "enum =value -> OK");
+    assert(cmdit_get_enum(he2, fe2) == 1, "enum index of always = 1");
+
+    test_group("enum: invalid choice -> BAD_ENUM");
+    var he3 = cmdit_new("t");
+    var fe3 = cmdit_enum(he3, 0, "color", "auto", "auto|always|never", "");
+    var ave3 = alloc(3 * 8); store64(ave3, "t"); store64(ave3 + 8, "--color"); store64(ave3 + 16, "purple");
+    assert(cmdit_parse_argv(he3, 3, ave3) == CMDIT_RESULT_ERR, "bad enum -> RESULT_ERR");
+    assert(cmdit_error(he3) == CMDIT_ERR_BAD_ENUM, "error code = BAD_ENUM");
+
+    test_group("enum: absent keeps default choice + its index");
+    var he4 = cmdit_new("t");
+    var fe4 = cmdit_enum(he4, 0, "color", "auto", "auto|always|never", "");
+    var ave4 = alloc(1 * 8); store64(ave4, "t");
+    assert(cmdit_parse_argv(he4, 1, ave4) == CMDIT_OK, "absent enum -> OK");
+    assert(cstreq(cmdit_get_str(he4, fe4), "auto") == 1, "default choice = auto");
+    assert(cmdit_get_enum(he4, fe4) == 0, "default index = 0");
+
+    test_group("range: in-range OK; boundaries inclusive");
+    var hr = cmdit_new("t");
+    var fr = cmdit_int(hr, 0, "width", 80, ""); cmdit_range(hr, fr, 1, 4096);
+    var avr = alloc(3 * 8); store64(avr, "t"); store64(avr + 8, "--width"); store64(avr + 16, "4096");
+    assert(cmdit_parse_argv(hr, 3, avr) == CMDIT_OK, "max boundary 4096 accepted");
+    assert(cmdit_get_int(hr, fr) == 4096, "value stored");
+    var hr1 = cmdit_new("t");
+    var fr1 = cmdit_int(hr1, 0, "width", 80, ""); cmdit_range(hr1, fr1, 1, 4096);
+    var avr1 = alloc(3 * 8); store64(avr1, "t"); store64(avr1 + 8, "--width"); store64(avr1 + 16, "1");
+    assert(cmdit_parse_argv(hr1, 3, avr1) == CMDIT_OK, "min boundary 1 accepted");
+
+    test_group("range: below min / above max -> OUT_OF_RANGE");
+    var hr2 = cmdit_new("t");
+    var fr2 = cmdit_int(hr2, 0, "width", 80, ""); cmdit_range(hr2, fr2, 1, 4096);
+    var avr2 = alloc(3 * 8); store64(avr2, "t"); store64(avr2 + 8, "--width"); store64(avr2 + 16, "0");
+    assert(cmdit_parse_argv(hr2, 3, avr2) == CMDIT_RESULT_ERR, "0 below min -> RESULT_ERR");
+    assert(cmdit_error(hr2) == CMDIT_ERR_OUT_OF_RANGE, "error code = OUT_OF_RANGE");
+    var hr3 = cmdit_new("t");
+    var fr3 = cmdit_int(hr3, 0, "width", 80, ""); cmdit_range(hr3, fr3, 1, 4096);
+    var avr3 = alloc(3 * 8); store64(avr3, "t"); store64(avr3 + 8, "--width"); store64(avr3 + 16, "4097");
+    assert(cmdit_parse_argv(hr3, 3, avr3) == CMDIT_RESULT_ERR, "4097 above max -> RESULT_ERR");
+    assert(cmdit_error(hr3) == CMDIT_ERR_OUT_OF_RANGE, "error code = OUT_OF_RANGE");
+
+    test_group("required: present -> finalize OK; seen reflects it");
+    var hq = cmdit_new("t");
+    var fq = cmdit_str(hq, 0, "handle", 0, ""); cmdit_required(hq, fq);
+    var avq = alloc(3 * 8); store64(avq, "t"); store64(avq + 8, "--handle"); store64(avq + 16, "bob");
+    assert(cmdit_parse_argv(hq, 3, avq) == CMDIT_OK, "parse OK");
+    assert(cmdit_seen(hq, fq) == 1, "seen = 1 after CLI set");
+    assert(cmdit_finalize(hq) == CMDIT_OK, "finalize OK (required satisfied)");
+
+    test_group("required: absent str -> REQUIRED_MISSING at finalize");
+    var hq2 = cmdit_new("t");
+    var fq2 = cmdit_str(hq2, 0, "handle", 0, ""); cmdit_required(hq2, fq2);
+    var avq2 = alloc(1 * 8); store64(avq2, "t");
+    assert(cmdit_parse_argv(hq2, 1, avq2) == CMDIT_OK, "parse_argv OK (required checked at finalize)");
+    assert(cmdit_seen(hq2, fq2) == 0, "seen = 0 when absent");
+    assert(cmdit_finalize(hq2) == CMDIT_RESULT_ERR, "finalize -> RESULT_ERR");
+    assert(cmdit_error(hq2) == CMDIT_ERR_REQUIRED_MISSING, "error code = REQUIRED_MISSING");
+
+    test_group("required: bool distinguishes absent from explicit-false");
+    var hq3 = cmdit_new("t");
+    var fq3 = cmdit_bool(hq3, 0, "i-mean-it", ""); cmdit_required(hq3, fq3);
+    var avq3 = alloc(1 * 8); store64(avq3, "t");
+    assert(cmdit_parse_argv(hq3, 1, avq3) == CMDIT_OK, "absent bool parse OK");
+    assert(cmdit_finalize(hq3) == CMDIT_RESULT_ERR, "required bool absent -> RESULT_ERR");
+    assert(cmdit_error(hq3) == CMDIT_ERR_REQUIRED_MISSING, "error = REQUIRED_MISSING");
+    var hq4 = cmdit_new("t");
+    var fq4 = cmdit_bool(hq4, 0, "i-mean-it", ""); cmdit_required(hq4, fq4);
+    var avq4 = alloc(2 * 8); store64(avq4, "t"); store64(avq4 + 8, "--i-mean-it");
+    assert(cmdit_parse_argv(hq4, 2, avq4) == CMDIT_OK, "present bool parse OK");
+    assert(cmdit_finalize(hq4) == CMDIT_OK, "required bool present -> finalize OK");
+    assert(cmdit_get_bool(hq4, fq4) == 1, "bool value = 1");
+
+    test_group("repeat: multiple occurrences accumulate in argv order");
+    var hp = cmdit_new("t");
+    var fp = cmdit_repeat(hp, 72, "header", "");      # -H
+    var avp = alloc(5 * 8);
+    store64(avp, "t"); store64(avp + 8, "-H"); store64(avp + 16, "A: 1");
+    store64(avp + 24, "-H"); store64(avp + 32, "B: 2");
+    assert(cmdit_parse_argv(hp, 5, avp) == CMDIT_OK, "repeat parse OK");
+    assert(cmdit_repeat_count(hp, fp) == 2, "two accumulated");
+    assert(cstreq(cmdit_repeat_get(hp, fp, 0), "A: 1") == 1, "first = A: 1");
+    assert(cstreq(cmdit_repeat_get(hp, fp, 1), "B: 2") == 1, "second = B: 2");
+    assert(cstreq(cmdit_get_str(hp, fp), "B: 2") == 1, "get_str = last occurrence");
+    assert(cmdit_repeat_get(hp, fp, 2) == 0, "out-of-range get -> 0");
+
+    test_group("repeat: zero occurrences -> count 0");
+    var hp2 = cmdit_new("t");
+    var fp2 = cmdit_repeat(hp2, 72, "header", "");
+    var avp2 = alloc(1 * 8); store64(avp2, "t");
+    assert(cmdit_parse_argv(hp2, 1, avp2) == CMDIT_OK, "no -H parse OK");
+    assert(cmdit_repeat_count(hp2, fp2) == 0, "count = 0");
+    assert(cmdit_repeat_get(hp2, fp2, 0) == 0, "get on empty -> 0");
+
+    # --- env: needs stdlib io getenv. PURITY + override are deterministic;
+    #     positive paths guard on a var the harness reliably inherits (HOME). ---
+
+    # PURITY is the load-bearing invariant — assert it UNCONDITIONALLY (no env
+    # value needed: the flag must stay at its registered default after parse_argv).
+    test_group("env PURITY: cmdit_parse_argv ignores env (env applies only at finalize)");
+    var hv = cmdit_new("t");
+    var fv = cmdit_str(hv, 0, "home", 0, ""); cmdit_env(hv, fv, "HOME");
+    var avv = alloc(1 * 8); store64(avv, "t");
+    assert(cmdit_parse_argv(hv, 1, avv) == CMDIT_OK, "pure parse OK");
+    assert(cmdit_get_str(hv, fv) == 0, "parse_argv did NOT read env (still registered default)");
+    assert(cmdit_seen(hv, fv) == 0, "not seen after pure parse");
+
+    test_group("env: finalize fills value from $HOME (guarded on HOME set)");
+    if (getenv("HOME") != 0) {
+        assert(cmdit_finalize(hv) == CMDIT_OK, "finalize OK");
+        assert(cstreq(cmdit_get_str(hv, fv), getenv("HOME")) == 1, "finalize filled value from $HOME");
+        assert(cmdit_seen(hv, fv) == 1, "seen after env fallback");
+    }
+
+    test_group("env: CLI value wins over env var");
+    var hv2 = cmdit_new("t");
+    var fv2 = cmdit_str(hv2, 0, "home", 0, ""); cmdit_env(hv2, fv2, "HOME");
+    var avv2 = alloc(3 * 8); store64(avv2, "t"); store64(avv2 + 8, "--home"); store64(avv2 + 16, "/cli");
+    assert(cmdit_parse_argv(hv2, 3, avv2) == CMDIT_OK, "parse OK");
+    assert(cmdit_finalize(hv2) == CMDIT_OK, "finalize OK");
+    assert(cstreq(cmdit_get_str(hv2, fv2), "/cli") == 1, "CLI value kept, env not consulted");
+
+    test_group("env: unset var -> default preserved");
+    var hv3 = cmdit_new("t");
+    var fv3 = cmdit_str(hv3, 0, "cfg", "DEF", ""); cmdit_env(hv3, fv3, "CMDIT_UNSET_VAR_XYZ_2026");
+    var avv3 = alloc(1 * 8); store64(avv3, "t");
+    assert(cmdit_parse_argv(hv3, 1, avv3) == CMDIT_OK, "parse OK");
+    assert(cmdit_finalize(hv3) == CMDIT_OK, "finalize OK");
+    assert(cstreq(cmdit_get_str(hv3, fv3), "DEF") == 1, "unset env -> default DEF");
+    assert(cmdit_seen(hv3, fv3) == 0, "not seen (env unset)");
+
+    test_group("env: bool presence + required-satisfied-by-env");
+    if (getenv("HOME") != 0) {
+        var hv4 = cmdit_new("t");
+        var fv4 = cmdit_bool(hv4, 0, "flag", ""); cmdit_env(hv4, fv4, "HOME");
+        var avv4 = alloc(1 * 8); store64(avv4, "t");
+        assert(cmdit_parse_argv(hv4, 1, avv4) == CMDIT_OK, "parse OK");
+        assert(cmdit_finalize(hv4) == CMDIT_OK, "finalize OK");
+        assert(cmdit_get_bool(hv4, fv4) == 1, "bool set by env presence");
+        var hv5 = cmdit_new("t");
+        var fv5 = cmdit_str(hv5, 0, "home", 0, ""); cmdit_env(hv5, fv5, "HOME"); cmdit_required(hv5, fv5);
+        var avv5 = alloc(1 * 8); store64(avv5, "t");
+        assert(cmdit_parse_argv(hv5, 1, avv5) == CMDIT_OK, "parse OK");
+        assert(cmdit_finalize(hv5) == CMDIT_OK, "env satisfies required -> finalize OK");
+    }
+
+    test_group("env: non-fatal bad value -> default, not error");
+    if (getenv("HOME") != 0) {
+        var hv6 = cmdit_new("t");
+        var fv6 = cmdit_int(hv6, 0, "n", 7, ""); cmdit_env(hv6, fv6, "HOME");   # HOME is non-numeric
+        var avv6 = alloc(1 * 8); store64(avv6, "t");
+        assert(cmdit_parse_argv(hv6, 1, avv6) == CMDIT_OK, "parse OK");
+        assert(cmdit_finalize(hv6) == CMDIT_OK, "bad env int is non-fatal -> finalize OK");
+        assert(cmdit_get_int(hv6, fv6) == 7, "default 7 preserved (env ignored)");
+        assert(cmdit_seen(hv6, fv6) == 0, "not seen (env value rejected)");
+    }
+
+    # A non-fatal env failure must leave the flag un-SEEN, so a required flag it
+    # was meant to satisfy still errors (env range/int failure + required precedence).
+    test_group("env: non-fatal failure leaves required unsatisfied");
+    if (getenv("HOME") != 0) {
+        var hrq = cmdit_new("t");
+        var frq = cmdit_int(hrq, 0, "n", 5, ""); cmdit_range(hrq, frq, 1, 10);
+        cmdit_env(hrq, frq, "HOME"); cmdit_required(hrq, frq);   # HOME is non-numeric -> rejected
+        var avrq = alloc(1 * 8); store64(avrq, "t");
+        assert(cmdit_parse_argv(hrq, 1, avrq) == CMDIT_OK, "parse OK");
+        assert(cmdit_finalize(hrq) == CMDIT_RESULT_ERR, "bad env -> un-SEEN -> required fails");
+        assert(cmdit_error(hrq) == CMDIT_ERR_REQUIRED_MISSING, "error = REQUIRED_MISSING");
+        assert(cmdit_get_int(hrq, frq) == 5, "default 5 preserved");
+    }
+
+    # NOTE: the set-but-empty env path (getenv returns ptr to "" -> ignored for
+    # int/str/enum, _cmdit_apply_env's `load8(val) != 0` guard) is an accepted
+    # coverage gap: stdlib getenv reads /proc/self/environ (fixed at exec), so a
+    # .tcyr cannot set an empty-valued var internally. The guard is provably
+    # correct and symmetric with the tested unset path above.
+
+    test_group("range: degenerate min==max accepts only that value");
+    var hrd = cmdit_new("t");
+    var frd = cmdit_int(hrd, 0, "sz", 0, ""); cmdit_range(hrd, frd, 64, 64);
+    var avrd = alloc(3 * 8); store64(avrd, "t"); store64(avrd + 8, "--sz"); store64(avrd + 16, "64");
+    assert(cmdit_parse_argv(hrd, 3, avrd) == CMDIT_OK, "64 accepted (min==max)");
+    assert(cmdit_get_int(hrd, frd) == 64, "value 64 stored");
+    var hrd2 = cmdit_new("t");
+    var frd2 = cmdit_int(hrd2, 0, "sz", 0, ""); cmdit_range(hrd2, frd2, 64, 64);
+    var avrd2 = alloc(3 * 8); store64(avrd2, "t"); store64(avrd2 + 8, "--sz"); store64(avrd2 + 16, "63");
+    assert(cmdit_parse_argv(hrd2, 3, avrd2) == CMDIT_RESULT_ERR, "63 rejected (min==max)");
+    assert(cmdit_error(hrd2) == CMDIT_ERR_OUT_OF_RANGE, "error = OUT_OF_RANGE");
+
+    test_group("enum: get_enum on a non-enum flag -> -1");
+    var hne = cmdit_new("t");
+    var fne = cmdit_str(hne, 0, "name", 0, "");
+    var avne = alloc(3 * 8); store64(avne, "t"); store64(avne + 8, "--name"); store64(avne + 16, "bob");
+    assert(cmdit_parse_argv(hne, 3, avne) == CMDIT_OK, "parse OK");
+    assert(cmdit_get_enum(hne, fne) == 0 - 1, "non-enum flag -> get_enum -1");
+
+    test_group("repeat: list capped at 64, last-wins tracks past the cap");
+    var hpc = cmdit_new("t");
+    var fpc = cmdit_repeat(hpc, 72, "header", "");
+    var navp = 131;                       # "t" + 65 * ("-H" value)
+    var avpc = alloc(navp * 8);
+    store64(avpc, "t");
+    var pk = 0;
+    while (pk < 65) {
+        store64(avpc + (1 + pk * 2) * 8, "-H");
+        store64(avpc + (2 + pk * 2) * 8, "v");
+        pk = pk + 1;
+    }
+    store64(avpc + (2 + 64 * 2) * 8, "LAST");   # distinct 65th value for last-wins
+    assert(cmdit_parse_argv(hpc, navp, avpc) == CMDIT_OK, "65 -H parse OK");
+    assert(cmdit_repeat_count(hpc, fpc) == 64, "list capped at 64");
+    assert(cmdit_repeat_get(hpc, fpc, 64) == 0, "65th (index 64) dropped -> 0");
+    assert(cmdit_repeat_get(hpc, fpc, 63) != 0, "64th (index 63) retained");
+    assert(cstreq(cmdit_get_str(hpc, fpc), "LAST") == 1, "last-wins view tracks past the cap");
+
+    test_group("err_flag: names the offending flag; -1 for unknown");
+    var hef = cmdit_new("t");
+    var fef = cmdit_enum(hef, 0, "color", "auto", "auto|always|never", "");
+    var avef = alloc(3 * 8); store64(avef, "t"); store64(avef + 8, "--color"); store64(avef + 16, "x");
+    assert(cmdit_parse_argv(hef, 3, avef) == CMDIT_RESULT_ERR, "bad enum -> err");
+    assert(cmdit_err_flag(hef) == fef, "err_flag = the --color index");
+    var hef2 = cmdit_new("t");
+    var avef2 = alloc(2 * 8); store64(avef2, "t"); store64(avef2 + 8, "--nope");
+    assert(cmdit_parse_argv(hef2, 2, avef2) == CMDIT_RESULT_ERR, "unknown -> err");
+    assert(cmdit_err_flag(hef2) == 0 - 1, "err_flag = -1 for UNKNOWN (no registered flag)");
+
+    test_group("end-to-end: cmdit_parse runs finalize (help short-circuits required)");
+    var hz = cmdit_new("t");
+    var fz = cmdit_str(hz, 0, "handle", 0, ""); cmdit_required(hz, fz);
+    var avz = alloc(2 * 8); store64(avz, "t"); store64(avz + 8, "--help");
+    assert(cmdit_parse_argv(hz, 2, avz) == CMDIT_HELP, "--help short-circuits before required");
 
     return assert_summary();
 }

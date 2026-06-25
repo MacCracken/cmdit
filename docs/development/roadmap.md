@@ -31,17 +31,23 @@ hand-rolled: the `cmdit_argv` materialize bridge, auto `--help`/`--version`,
 generated help, and the `CMDIT_EXIT_*` convention; `FLAGS_MAX` 32→64; raw-argv
 escape hatch. Pure `cmdit_parse_argv` core, **26/26 tests**, real-argv smoke green.
 
-### M2 — flag modifiers (v0.2.0)
+### M2 — flag modifiers (v0.2.0) — ✅ shipped 2026-06-25
 
-The new parse-loop FlagTypes/modifiers the survey found hand-rolled everywhere
-(append-only — types stay byte-compatible, the error taxonomy only grows):
-- `cmdit_enum` — choice flags (`auto|always|never`); subsumes the nested-streq
-  validation in attn11 `--attn-kind` / owl ×5 / agnova / cyim / phylax.
-- `cmdit_repeat` — accumulate flags (whirl `-H`).
-- `cmdit_required` — required flags (agora `--handle`, agnova `--i-mean-it`).
-- `cmdit_range` — int range validation (bannermanor, chakshu, attn11 caps).
-- `cmdit_env` — env-var fallback (`NO_COLOR`, `$ARK_CONFIG`).
-- Acceptance: each FD-free unit-tested; the extended taxonomy documented.
+The new parse-loop modifiers the survey found hand-rolled everywhere (append-only
+— types stay byte-compatible, the error taxonomy only grows). Re-grounded
+site-by-site against the consumer repos before landing:
+- `cmdit_enum` — choice flags (`auto|always|never`) + `cmdit_get_enum` index
+  dispatch; subsumes the nested-streq validation in attn11 `--attn-kind` /
+  owl ×5 / cyim / phylax.
+- `cmdit_repeat` — accumulate flags (whirl `-H`) + count/get accessors.
+- `cmdit_required` — required flags (agora `--handle`, agnova `--i-mean-it`) on a
+  SEEN bit (+ `cmdit_seen`), checked in `cmdit_finalize`.
+- `cmdit_range` — inclusive int bounds, reject-not-clamp (bannermanor, attn11 caps).
+- `cmdit_env` — env-var fallback (`NO_COLOR`, `$ARK_CONFIG`), CLI-wins, non-fatal.
+- Plus: flag-named errors, enriched help, the impure/pure split (`cmdit_finalize`
+  vs `cmdit_parse_argv`). **88/88 tests** (incl. a parse-core purity test); the
+  extended taxonomy documented. See [`../adr/0001-flag-modifiers.md`](../adr/0001-flag-modifiers.md).
+- Deferred to 0.3.0: `cmdit_require_positionals` (positional-count validation).
 
 ### M3 — verb / subcommand dispatch (v0.3.0)
 

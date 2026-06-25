@@ -5,7 +5,7 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v0.1.0 (the extraction cut). **License:** GPL-3.0-only. Distributed as
+**Status:** v0.2.0 (flag modifiers). **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
 ## Why
@@ -32,9 +32,30 @@ codes) plus the three things every structured consumer copies by hand.
   (kills hand-written-help drift); `cmdit_version` centralizes the version line.
 - **Standard errors + exit codes** — `cmdit_print_error` + `CMDIT_EXIT_OK/RUN/USAGE`
   (the `0`/`1`/`2` AGNOS userland convention as named constants).
-- **Pure, testable core** — `cmdit_parse_argv(h, argc, argv)` never reads `/proc`,
-  so tests drive synthetic argv. **Escape hatch** `cmdit_raw_argv` for non-getopt
-  grammars (e.g. `dig`'s `@server`).
+- **Pure, testable core** — `cmdit_parse_argv(h, argc, argv)` never reads `/proc`
+  or the environment, so tests drive synthetic argv. **Escape hatch**
+  `cmdit_raw_argv` for non-getopt grammars (e.g. `dig`'s `@server`).
+
+## Flag modifiers (0.2.0)
+
+Five modifiers that subsume the patterns the ecosystem survey found hand-rolled
+(all append-only on the byte-compatible core):
+
+- **`cmdit_enum`** — choice flags: `cmdit_enum(h, 0, "color", "auto", "auto|always|never", help)`.
+  Validated at parse (`CMDIT_ERR_BAD_ENUM` otherwise); `cmdit_get_enum` returns the
+  0-based index for dispatch, `cmdit_get_str` the raw choice.
+- **`cmdit_repeat`** — repeatable flags (`-H a -H b`): `cmdit_repeat_count` /
+  `cmdit_repeat_get` read the accumulated list; `cmdit_get_str` is last-wins.
+- **`cmdit_required`** — `cmdit_required(h, idx)` marker (any type incl. bool);
+  absent → `CMDIT_ERR_REQUIRED_MISSING`. `cmdit_seen(h, idx)` queries presence.
+- **`cmdit_range`** — `cmdit_range(h, idx, min, max)` inclusive int bounds, rejected
+  (not clamped) → `CMDIT_ERR_OUT_OF_RANGE`.
+- **`cmdit_env`** — `cmdit_env(h, idx, "NO_COLOR")` env fallback; CLI wins,
+  bool = presence, bad values non-fatal.
+
+The env + required checks run in **`cmdit_finalize`** (chained by `cmdit_parse`);
+the pure `cmdit_parse_argv` core stays env-free. `cmdit_print_error` names the
+offending flag and lists the valid enum set.
 
 ## Usage
 
@@ -62,19 +83,20 @@ Consuming repos add to `cyrius.cyml`:
 ```cyml
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit"
-tag = "0.1.0"
+tag = "0.2.0"
 modules = ["dist/cmdit.cyr"]
 ```
 
-`cmdit_argv`/`cmdit_parse` need stdlib `"args"` in the consumer's `[deps] stdlib`.
-Callers that pass their own array to `cmdit_parse_argv` don't.
+`cmdit_argv`/`cmdit_parse` need stdlib `"args"` in the consumer's `[deps] stdlib`,
+and `"io"` (for `getenv`, referenced by `cmdit_parse` via `cmdit_finalize`).
+Callers that drive `cmdit_parse_argv` directly don't invoke either.
 
 ## Roadmap
 
 - **0.1.0** — the extraction: getopt-long core + materialize bridge + auto help/
   version + exit constants + raw-argv escape (this cut).
-- **0.2.0** — `cmdit_enum` (choice flags), `cmdit_repeat`, `cmdit_required`,
-  `cmdit_range`, `cmdit_env` (the new parse-loop modifiers).
+- **0.2.0** — `cmdit_enum` (choice flags + index), `cmdit_repeat`, `cmdit_required`,
+  `cmdit_range`, `cmdit_env`, `cmdit_finalize` + flag-named errors (this cut).
 - **0.3.0** — verb / subcommand dispatch (`cmdit_verb` / `cmdit_dispatch`),
   nested sub-verbs, before-or-after global flags.
 

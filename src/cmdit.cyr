@@ -41,11 +41,20 @@
 #   -                   lone dash is a positional (stdin convention)
 #   positionals accumulated in cmdit_positional(*) in argv order
 #
-# NOT supported in 0.1.0 (deferred): bundled short bools -xyz, attached short
-# value -xvalue, --no-foo negation, enum/repeat/required/range/env, verbs.
+# Flag modifiers (0.2.0): cmdit_enum (choice flags) / cmdit_repeat (accumulate) /
+# cmdit_required / cmdit_range (int bounds) / cmdit_env (env-var fallback). The
+# env + required checks run in cmdit_finalize (chained by cmdit_parse); the
+# cmdit_parse_argv core stays pure (no /proc, no env) for synthetic-argv testing.
 #
-# Consumer deps: needs stdlib "args" (for cmdit_argv/cmdit_parse — the /proc argv
-# read). Pure callers that pass their own argv array to cmdit_parse_argv don't.
+# NOT supported (deferred): bundled short bools -xyz, attached short value
+# -xvalue, --no-foo negation, count -vvv, verbs (0.3.0). Out of cmdit scope:
+# dynamic/large enum lists, cross-field/modulo ranges, pure-env cascades with no
+# associated flag — those stay caller-side.
+#
+# Consumer deps: needs stdlib "args" (cmdit_argv/cmdit_parse — the /proc argv
+# read) and "io" (cmdit_env -> getenv; referenced unconditionally by cmdit_parse
+# via finalize). Pure callers that drive cmdit_parse_argv with their own array and
+# never call cmdit_finalize still link getenv but never invoke it.
 
 enum CmditType {
     CMDIT_BOOL = 0;
@@ -54,13 +63,16 @@ enum CmditType {
 }
 
 # Byte-compatible with flags.cyr FlagErr; 0.2.0 appends REQUIRED_MISSING=5,
-# BAD_ENUM=6, OUT_OF_RANGE=7, UNKNOWN_VERB=8 (the taxonomy only grows).
+# BAD_ENUM=6, OUT_OF_RANGE=7 (0.3.0 reserves UNKNOWN_VERB=8 — the taxonomy only grows).
 enum CmditErr {
     CMDIT_ERR_NONE = 0;
     CMDIT_ERR_UNKNOWN = 1;
     CMDIT_ERR_MISSING_VALUE = 2;
     CMDIT_ERR_BAD_INT = 3;
     CMDIT_ERR_BUNDLED = 4;
+    CMDIT_ERR_REQUIRED_MISSING = 5;   # a cmdit_required flag absent at finalize
+    CMDIT_ERR_BAD_ENUM = 6;           # a cmdit_enum value outside its choice set
+    CMDIT_ERR_OUT_OF_RANGE = 7;       # a cmdit_range int outside [min, max]
 }
 
 # Parse result codes (return of cmdit_parse / cmdit_parse_argv).
@@ -77,10 +89,18 @@ var CMDIT_EXIT_USAGE = 2;    # usage / parse error
 
 var CMDIT_FLAGS_MAX = 64;    # raised from flags.cyr's 32 — attn11 has ~35 flags
 var CMDIT_POS_MAX = 128;
-var CMDIT_CTX_SIZE = 96;
-var CMDIT_ENTRY_SIZE = 48;
+var CMDIT_CTX_SIZE = 104;    # 0.2.0: +96 err_entry (was 96)
+var CMDIT_ENTRY_SIZE = 104;  # 0.2.0: grown 48 -> 104, append-only (old offsets unchanged)
+var CMDIT_REPEAT_MAX = 64;   # per cmdit_repeat flag occurrence cap (silently capped, like positionals)
 
-# Context layout (96 B):
+# Per-entry attribute bitfield (entry +48). Append-only; the byte-compatible
+# 0.1.0 type/offset layout (+0..+40) is untouched, so CMDIT_BOOL/INT/STR stay {0,1,2}.
+var CMDIT_ATTR_REQUIRED = 1;   # cmdit_required — must be SEEN by finalize
+var CMDIT_ATTR_SEEN = 2;       # set by CLI parse or env fallback when a value was applied
+var CMDIT_ATTR_RANGE = 4;      # cmdit_range — min/max valid at +72/+80
+var CMDIT_ATTR_REPEAT = 8;     # cmdit_repeat — list at +88, count at +96
+
+# Context layout (104 B):
 #   +0  entries_ptr      : i64 array of CMDIT_ENTRY_SIZE entries
 #   +8  entries_cap      : i64 (= CMDIT_FLAGS_MAX)
 #  +16  entries_count    : i64
@@ -93,9 +113,13 @@ var CMDIT_ENTRY_SIZE = 48;
 #  +72  raw_argc         : i64
 #  +80  help_idx         : i64 (auto-registered --help/-h flag index)
 #  +88  version_idx      : i64 (auto-registered --version/-V flag index)
+#  +96  err_entry        : i64 (0.2.0; entry ptr that produced last_error, 0 = none/UNKNOWN)
 #
-# Entry layout (48 B), byte-compatible with flags.cyr:
+# Entry layout (104 B). +0..+40 are byte-compatible with flags.cyr; +48.. are
+# the append-only 0.2.0 modifier fields:
 #   +0 short_ch  +8 long_name  +16 type  +24 value  +32 default_value  +40 help
+#  +48 attrs (bitfield)  +56 choices (cstr, "a|b|c"; 0=not enum)  +64 env_name (cstr; 0=none)
+#  +72 range_min  +80 range_max  +88 repeat_list (cstr* array; 0 until first append)  +96 repeat_count
 
 fn _cmdit_add(h, short_ch, long_name, type, default_val, help): i64 {
     var count = load64(h + 16);
@@ -125,6 +149,76 @@ fn cmdit_str(h, short_ch, long_name, default_val, help): i64 {
     return _cmdit_add(h, short_ch, long_name, CMDIT_STR, default_val, help);
 }
 
+# --- 0.2.0 flag modifiers ----------------------------------------------------
+# Each subsumes a pattern the 2026-06-25 ecosystem survey found hand-rolled
+# across the consumer repos. All append-only on top of the byte-compatible core.
+
+# Register a choice/enum flag (underlying CMDIT_STR). `choices` is a '|'-delimited
+# cstr literal, e.g. "auto|always|never"; the parsed value must be one of them or
+# parse fails with CMDIT_ERR_BAD_ENUM. `default_val` is a default-choice cstr (or
+# 0). Retrieve the raw choice with cmdit_get_str, or its 0-based index (for
+# dispatch) with cmdit_get_enum. Subsumes the nested-streq validation in
+# attn11/owl/agnova/cyim/phylax. (A consumer's own non-index mapping — e.g. owl's
+# auto=-1/always=1/never=0 sentinels — is a trivial 3-way map on cmdit_get_enum.)
+fn cmdit_enum(h, short_ch, long_name, default_val, choices, help): i64 {
+    var idx = _cmdit_add(h, short_ch, long_name, CMDIT_STR, default_val, help);
+    if (idx < 0) { return idx; }
+    store64(_cmdit_entry(h, idx) + 56, choices);
+    return idx;
+}
+
+# Register a repeatable flag (underlying CMDIT_STR): each `--flag value`
+# occurrence appends to a per-flag list (cap CMDIT_REPEAT_MAX, silently capped
+# like positionals). Read with cmdit_repeat_count / cmdit_repeat_get; the last
+# occurrence is also visible via cmdit_get_str. Subsumes whirl's -H accumulator.
+fn cmdit_repeat(h, short_ch, long_name, help): i64 {
+    var idx = _cmdit_add(h, short_ch, long_name, CMDIT_STR, 0, help);
+    if (idx < 0) { return idx; }
+    var ep = _cmdit_entry(h, idx);
+    store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_REPEAT);
+    return idx;
+}
+
+# Mark an already-registered flag (any type, incl. bool) required: absent at
+# finalize -> CMDIT_ERR_REQUIRED_MISSING. Presence is tracked by a SEEN bit (set
+# by CLI parse or env fallback), so a required bool like agnova --i-mean-it
+# distinguishes absent from explicit-false. Returns idx for chaining. Subsumes
+# agora --handle / agnova --device/--user/--i-mean-it post-parse sentinel checks.
+fn cmdit_required(h, idx): i64 {
+    if (idx < 0) { return idx; }
+    var ep = _cmdit_entry(h, idx);
+    store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_REQUIRED);
+    return idx;
+}
+
+# Constrain an int flag to the inclusive range [min_val, max_val]. Out-of-range
+# input is REJECTED (not clamped) -> CMDIT_ERR_OUT_OF_RANGE. Returns idx for
+# chaining. Static constant bounds only (cross-field/modulo bounds — attn11
+# --rope-dim<=d_model, rope_dim%2 — stay caller-side). Subsumes bannermanor
+# --width/--pad, attn11 --layers/--mtp/--bpe caps. (No-op on non-int flags.)
+fn cmdit_range(h, idx, min_val, max_val): i64 {
+    if (idx < 0) { return idx; }
+    var ep = _cmdit_entry(h, idx);
+    store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_RANGE);
+    store64(ep + 72, min_val);
+    store64(ep + 80, max_val);
+    return idx;
+}
+
+# Give a flag an environment-variable fallback: if absent from argv, its value
+# comes from `env_name` (read at finalize). CLI always wins. Bool flags use
+# presence semantics (var set to ANY value, even empty, -> 1; the NO_COLOR
+# convention); int/str/enum flags use the value (set-but-empty is ignored).
+# Env values are validated NON-FATALLY — a bad int / out-of-range / bad enum
+# falls through to the registered default rather than erroring. Returns idx for
+# chaining. Subsumes single flag-bound vars (NO_COLOR, CHAKSHU_HOOSH_TOKEN,
+# ARK_CONFIG); pure-env cascades with no flag stay caller-side. Needs stdlib "io".
+fn cmdit_env(h, idx, env_name): i64 {
+    if (idx < 0) { return idx; }
+    store64(_cmdit_entry(h, idx) + 64, env_name);
+    return idx;
+}
+
 # Allocate-once parser context. Auto-registers --help/-h and --version/-V, so
 # every cmdit tool gets them for free. `prog_name` is the clean name printed in
 # usage/version lines (pass 0 to fall back to argv[0] at parse).
@@ -144,6 +238,7 @@ fn cmdit_new(prog_name): i64 {
     store64(h + 56, CMDIT_ERR_NONE);
     store64(h + 64, 0);
     store64(h + 72, 0);
+    store64(h + 96, 0);                                                          # err_entry (0.2.0)
     store64(h + 80, cmdit_bool(h, 104, "help", "show this help and exit"));      # 'h'
     store64(h + 88, cmdit_bool(h, 86, "version", "print version and exit"));     # 'V'
     return h;
@@ -156,6 +251,34 @@ fn cmdit_get_bool(h, idx): i64 { return load64(_cmdit_entry(h, idx) + 24); }
 fn cmdit_get_int(h, idx): i64 { return load64(_cmdit_entry(h, idx) + 24); }
 fn cmdit_get_str(h, idx): i64 { return load64(_cmdit_entry(h, idx) + 24); }
 
+# Enum flag's 0-based matched-choice index (the dispatch the survey found every
+# consumer re-deriving) — order of the '|'-delimited choices, -1 if unset/none or
+# the stored value is not in the set. Cache it once after parse; it re-walks the
+# choices cstr per call.
+fn cmdit_get_enum(h, idx): i64 {
+    var ep = _cmdit_entry(h, idx);
+    return _cmdit_enum_index(load64(ep + 56), load64(ep + 24));
+}
+
+# 1 if the flag was provided (CLI or env fallback), 0 if still at its default.
+# The presence query cmdit_required relies on — also enables bespoke confirmation
+# messages, conditional-required, and duplicate detection in caller code. (SEEN
+# does not distinguish CLI-set from env-set.)
+fn cmdit_seen(h, idx): i64 {
+    if ((load64(_cmdit_entry(h, idx) + 48) & CMDIT_ATTR_SEEN) != 0) { return 1; }
+    return 0;
+}
+
+# Repeatable flag accessors: count of accumulated occurrences, and the i-th value
+# (cstr) in argv order (0 if out of range).
+fn cmdit_repeat_count(h, idx): i64 { return load64(_cmdit_entry(h, idx) + 96); }
+fn cmdit_repeat_get(h, idx, i): i64 {
+    var ep = _cmdit_entry(h, idx);
+    if (i < 0) { return 0; }
+    if (i >= load64(ep + 96)) { return 0; }
+    return load64(load64(ep + 88) + i * 8);
+}
+
 # Positional (non-flag) args in argv order, including everything after `--`.
 fn cmdit_positional_count(h): i64 { return load64(h + 40); }
 fn cmdit_positional(h, idx): i64 {
@@ -166,6 +289,15 @@ fn cmdit_positional(h, idx): i64 {
 
 # Last parse error (CmditErr). Checked after a CMDIT_RESULT_ERR return.
 fn cmdit_error(h): i64 { return load64(h + 56); }
+
+# Index of the flag that produced the last error (for consumer-rendered messages),
+# or -1 if none / the error names no registered flag (UNKNOWN/BUNDLED). The same
+# flag cmdit_print_error names. Matches the registration index from cmdit_*.
+fn cmdit_err_flag(h): i64 {
+    var ep = load64(h + 96);
+    if (ep == 0) { return 0 - 1; }
+    return (ep - load64(h)) / CMDIT_ENTRY_SIZE;
+}
 
 # Escape hatch: the materialized argv array + count, for non-getopt grammars
 # (e.g. dig's @server / +opt) that hand-tokenize but still want help/version.
@@ -233,17 +365,84 @@ fn _cmdit_parse_int(s): i64 {
     return n;
 }
 
+# 0-based index of `value` among the '|'-delimited tokens in `choices`, else -1.
+# Tokens are compared by exact length + bytes (no NUL inside choices between
+# delimiters). Used for both enum validation (>= 0 == valid) and cmdit_get_enum.
+fn _cmdit_enum_index(choices, value): i64 {
+    if (choices == 0) { return 0 - 1; }
+    if (value == 0) { return 0 - 1; }
+    var vlen = strlen(value);
+    var ts = 0;          # current token start in choices
+    var i = 0;
+    var idx = 0;
+    var done = 0;
+    while (done == 0) {
+        var c = load8(choices + i);
+        if (c == 0) { done = 1; }
+        if (c == 124 || c == 0) {       # '|' (124) or end of string
+            var tlen = i - ts;
+            if (tlen == vlen) {
+                var k = 0;
+                var hit = 1;
+                while (k < vlen) {
+                    if (load8(choices + ts + k) != load8(value + k)) { hit = 0; break; }
+                    k = k + 1;
+                }
+                if (hit == 1) { return idx; }
+            }
+            idx = idx + 1;
+            ts = i + 1;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# Append a value to a repeat flag's per-entry list (alloc'd lazily). The value is
+# also written to +24 so cmdit_get_str yields a last-wins scalar view. Silently
+# caps the LIST at CMDIT_REPEAT_MAX (same drop-past-cap contract as positionals);
+# the last-wins view keeps tracking past the cap.
+fn _cmdit_repeat_push(ep, value_ptr): i64 {
+    store64(ep + 24, value_ptr);
+    var list = load64(ep + 88);
+    if (list == 0) {
+        list = alloc(CMDIT_REPEAT_MAX * 8);
+        store64(ep + 88, list);
+    }
+    var c = load64(ep + 96);
+    if (c >= CMDIT_REPEAT_MAX) { return CMDIT_ERR_NONE; }
+    store64(list + c * 8, value_ptr);
+    store64(ep + 96, c + 1);
+    return CMDIT_ERR_NONE;
+}
+
+# Apply a value to an entry. Does NOT set the SEEN bit — callers (parse loop /
+# env fallback) set SEEN only on success, so a non-fatal env failure leaves the
+# default untouched and un-SEEN. Repeat appends; enum/range validate before store.
 fn _cmdit_apply(ep, value_ptr): i64 {
     var type = load64(ep + 16);
+    var attrs = load64(ep + 48);
+    if ((attrs & CMDIT_ATTR_REPEAT) != 0) {
+        if (value_ptr == 0) { return CMDIT_ERR_MISSING_VALUE; }
+        return _cmdit_repeat_push(ep, value_ptr);
+    }
     if (type == CMDIT_BOOL) { store64(ep + 24, 1); return CMDIT_ERR_NONE; }
     if (value_ptr == 0) { return CMDIT_ERR_MISSING_VALUE; }
     if (type == CMDIT_INT) {
         var n = _cmdit_parse_int(value_ptr);
         if (_cmdit_pint_ok == 0) { return CMDIT_ERR_BAD_INT; }
+        if ((attrs & CMDIT_ATTR_RANGE) != 0) {
+            if (n < load64(ep + 72)) { return CMDIT_ERR_OUT_OF_RANGE; }
+            if (n > load64(ep + 80)) { return CMDIT_ERR_OUT_OF_RANGE; }
+        }
         store64(ep + 24, n);
         return CMDIT_ERR_NONE;
     }
-    store64(ep + 24, value_ptr);   # CMDIT_STR
+    var choices = load64(ep + 56);              # CMDIT_STR (incl. enum)
+    if (choices != 0) {
+        if (_cmdit_enum_index(choices, value_ptr) < 0) { return CMDIT_ERR_BAD_ENUM; }
+    }
+    store64(ep + 24, value_ptr);
     return CMDIT_ERR_NONE;
 }
 
@@ -286,7 +485,7 @@ fn cmdit_parse_argv(h, argc, argv): i64 {
             if (ep == 0) { store64(h + 56, CMDIT_ERR_UNKNOWN); return CMDIT_RESULT_ERR; }
             if (eq >= 0) { value_ptr = name_start + eq + 1; }
             if (value_ptr == 0 && load64(ep + 16) != CMDIT_BOOL) {
-                if (i + 1 >= argc) { store64(h + 56, CMDIT_ERR_MISSING_VALUE); return CMDIT_RESULT_ERR; }
+                if (i + 1 >= argc) { store64(h + 56, CMDIT_ERR_MISSING_VALUE); store64(h + 96, ep); return CMDIT_RESULT_ERR; }
                 value_ptr = load64(argv + (i + 1) * 8);
                 i = i + 1;
             }
@@ -295,13 +494,14 @@ fn cmdit_parse_argv(h, argc, argv): i64 {
             ep = _cmdit_find_short(h, load8(tok + 1));
             if (ep == 0) { store64(h + 56, CMDIT_ERR_UNKNOWN); return CMDIT_RESULT_ERR; }
             if (load64(ep + 16) != CMDIT_BOOL) {
-                if (i + 1 >= argc) { store64(h + 56, CMDIT_ERR_MISSING_VALUE); return CMDIT_RESULT_ERR; }
+                if (i + 1 >= argc) { store64(h + 56, CMDIT_ERR_MISSING_VALUE); store64(h + 96, ep); return CMDIT_RESULT_ERR; }
                 value_ptr = load64(argv + (i + 1) * 8);
                 i = i + 1;
             }
         }
         var ar = _cmdit_apply(ep, value_ptr);
-        if (ar != CMDIT_ERR_NONE) { store64(h + 56, ar); return CMDIT_RESULT_ERR; }
+        if (ar != CMDIT_ERR_NONE) { store64(h + 56, ar); store64(h + 96, ep); return CMDIT_RESULT_ERR; }
+        store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_SEEN);   # mark provided (for required/env)
         i = i + 1;
     }
     if (cmdit_get_bool(h, load64(h + 80)) == 1) { return CMDIT_HELP; }
@@ -326,11 +526,76 @@ fn cmdit_argv(h): i64 {
     return n;
 }
 
-# Convenience: materialize the process argv, then parse it. The form most
-# single-tool consumers call.
+# --- 0.2.0 finalize: env fallback + required check (the impure post-stage) ---
+# Kept OUT of cmdit_parse_argv so that pure core stays /proc- and env-free and
+# the synthetic-argv test suite is deterministic. cmdit_parse runs it; tests can
+# call it directly (with no env_name set, getenv is never reached -> still pure).
+
+# For every un-SEEN flag with an env_name, apply the env var as a fallback value.
+# NON-FATAL: a bad int / out-of-range / bad enum / set-but-empty value is ignored
+# (default preserved, flag stays un-SEEN) — only CLI input is fatal. Bool flags
+# use presence semantics (var set to ANY value, even empty, -> 1; NO_COLOR-style).
+fn _cmdit_apply_env(h): i64 {
+    var count = load64(h + 16);
+    var i = 0;
+    while (i < count) {
+        var ep = _cmdit_entry(h, i);
+        var env_name = load64(ep + 64);
+        if (env_name != 0 && (load64(ep + 48) & CMDIT_ATTR_SEEN) == 0) {
+            var val = getenv(env_name);
+            if (val != 0) {
+                if (load64(ep + 16) == CMDIT_BOOL) {
+                    store64(ep + 24, 1);                                          # presence -> true
+                    store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_SEEN);
+                } else {
+                    if (load8(val) != 0) {                                        # ignore set-but-empty
+                        if (_cmdit_apply(ep, val) == CMDIT_ERR_NONE) {
+                            store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_SEEN);
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return CMDIT_ERR_NONE;
+}
+
+# Every cmdit_required flag must be SEEN (by CLI or env); else the first such flag
+# yields CMDIT_ERR_REQUIRED_MISSING + err_entry.
+fn _cmdit_check_required(h): i64 {
+    var count = load64(h + 16);
+    var i = 0;
+    while (i < count) {
+        var ep = _cmdit_entry(h, i);
+        var attrs = load64(ep + 48);
+        if ((attrs & CMDIT_ATTR_REQUIRED) != 0) {
+            if ((attrs & CMDIT_ATTR_SEEN) == 0) { store64(h + 96, ep); return CMDIT_ERR_REQUIRED_MISSING; }
+        }
+        i = i + 1;
+    }
+    return CMDIT_ERR_NONE;
+}
+
+# Run the post-parse stage: env fallback FIRST (so env can satisfy required),
+# then the required check. Returns CMDIT_OK or CMDIT_RESULT_ERR (cmdit_error =
+# REQUIRED_MISSING). Call only on a CMDIT_OK parse (help/version short-circuit
+# before this). Idempotent enough for one finalize per parse.
+fn cmdit_finalize(h): i64 {
+    _cmdit_apply_env(h);
+    var rq = _cmdit_check_required(h);
+    if (rq != CMDIT_ERR_NONE) { store64(h + 56, rq); return CMDIT_RESULT_ERR; }
+    return CMDIT_OK;
+}
+
+# Convenience: materialize the process argv, parse it, then finalize (env +
+# required). The form most single-tool consumers call. help/version/parse-error
+# results propagate untouched — finalize runs only on a clean CMDIT_OK parse.
 fn cmdit_parse(h): i64 {
     var n = cmdit_argv(h);
-    return cmdit_parse_argv(h, n, load64(h + 64));
+    var r = cmdit_parse_argv(h, n, load64(h + 64));
+    if (r != CMDIT_OK) { return r; }
+    return cmdit_finalize(h);
 }
 
 # --- output: generated help / version / error -------------------------------
@@ -365,9 +630,14 @@ fn cmdit_help(h): i64 {
             _cmdit_eprint("    ");
         }
         if (long_name != 0) { _cmdit_eprint("--"); _cmdit_eprint(long_name); }
-        if (type == CMDIT_INT) { _cmdit_eprint(" <int>"); }
+        var choices = load64(ep + 56);
+        var attrs = load64(ep + 48);
+        if (choices != 0) { _cmdit_eprint(" <"); _cmdit_eprint(choices); _cmdit_eprint(">"); }   # enum set
+        elif (type == CMDIT_INT) { _cmdit_eprint(" <int>"); }
         elif (type == CMDIT_STR) { _cmdit_eprint(" <str>"); }
+        if ((attrs & CMDIT_ATTR_REPEAT) != 0) { _cmdit_eprint("..."); }           # repeatable
         if (help != 0) { _cmdit_eprint("\t"); _cmdit_eprint(help); }
+        if ((attrs & CMDIT_ATTR_REQUIRED) != 0) { _cmdit_eprint(" (required)"); }
         _cmdit_eprint("\n");
         i = i + 1;
     }
@@ -384,17 +654,49 @@ fn cmdit_version(h, version_str): i64 {
     return CMDIT_EXIT_OK;
 }
 
-# Decode the last error into a standard "<prog>: <message>" stderr line. Absorbs
-# the FlagErr->message switch kii/anuenue/bannermanor copy verbatim. Returns
-# CMDIT_EXIT_USAGE for direct `return`.
+# Print the offending flag's name ("--long" preferred, else "-x") to stderr, if
+# err_entry names one. The flag-naming the survey found near-universal on
+# validation errors (agora/bannermanor/cyim/attn11).
+fn _cmdit_eprint_flag(ep): i64 {
+    if (ep == 0) { return 0; }
+    var ln = load64(ep + 8);
+    if (ln != 0) { _cmdit_eprint("--"); _cmdit_eprint(ln); _cmdit_eprint(": "); return 0; }
+    var sc = load64(ep);
+    if (sc != 0) {
+        var sb[2];
+        store8(&sb, sc);
+        store8(&sb + 1, 0);
+        _cmdit_eprint("-");
+        syscall(1, 2, &sb, 1);
+        _cmdit_eprint(": ");
+    }
+    return 0;
+}
+
+# Decode the last error into a standard "<prog>: [<flag>: ]<message>" stderr line.
+# Absorbs the FlagErr->message switch kii/anuenue/bannermanor copy verbatim, and
+# (0.2.0) names the offending flag for value/modifier errors + lists the enum set.
+# UNKNOWN stays generic (the token is, by definition, not a registered flag).
+# Returns CMDIT_EXIT_USAGE for direct `return`.
 fn cmdit_print_error(h): i64 {
     var prog = load64(h + 48);
     var e = load64(h + 56);
+    var ep = load64(h + 96);
     if (prog != 0) { _cmdit_eprint(prog); _cmdit_eprint(": "); }
+    if (e != CMDIT_ERR_UNKNOWN) { _cmdit_eprint_flag(ep); }
     if (e == CMDIT_ERR_UNKNOWN) { _cmdit_eprint("unknown flag"); }
-    elif (e == CMDIT_ERR_MISSING_VALUE) { _cmdit_eprint("missing value for flag"); }
+    elif (e == CMDIT_ERR_MISSING_VALUE) { _cmdit_eprint("missing value"); }
     elif (e == CMDIT_ERR_BAD_INT) { _cmdit_eprint("invalid integer value"); }
     elif (e == CMDIT_ERR_BUNDLED) { _cmdit_eprint("bundled/attached short flags not supported (use -x -y)"); }
+    elif (e == CMDIT_ERR_REQUIRED_MISSING) { _cmdit_eprint("required flag missing"); }
+    elif (e == CMDIT_ERR_BAD_ENUM) {
+        _cmdit_eprint("invalid value");
+        if (ep != 0) {
+            var ch = load64(ep + 56);
+            if (ch != 0) { _cmdit_eprint(" (expected "); _cmdit_eprint(ch); _cmdit_eprint(")"); }
+        }
+    }
+    elif (e == CMDIT_ERR_OUT_OF_RANGE) { _cmdit_eprint("value out of range"); }
     else { _cmdit_eprint("argument error"); }
     _cmdit_eprint("\n");
     return CMDIT_EXIT_USAGE;

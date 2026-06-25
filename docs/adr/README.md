@@ -19,4 +19,4 @@ Decisions about cmdit — what we chose, the context, and the consequences we ac
 
 ## Index
 
-_No ADRs yet. Add the first as `0001-kebab-case-title.md`._
+- [0001 — Flag modifiers as append-only entry fields with a pure/impure parse split](0001-flag-modifiers.md) — *Accepted*
