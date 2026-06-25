@@ -4,6 +4,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - Unreleased
+
+**Verb / subcommand dispatch (M3).** Identify-and-return dispatch (mirroring
+`cmdit_get_enum`, not handler fn-ptrs — consumer handler signatures are
+irreconcilable and the codebase never uses fn-ptrs), grounded in a site-by-site
+re-survey of the ~9 subcommand tools (ark/sit/takumi/hapi/phylax/agnova/hadara/
+hoosh/cyim) + the kriya multiplexer. Append-only: the entry struct is unchanged
+(verbs are a separate lazy-allocated table), ctx grows 104→160 B, error taxonomy
+grows. The pure `cmdit_parse_argv` core is untouched.
+
+### Added
+- **`cmdit_verb`** / **`cmdit_verb_alias`** — register subcommands (and aliases)
+  in a lazily-allocated verb table; `cmdit_verb` returns the verb id, the
+  identify-and-return key.
+- **`cmdit_dispatch_argv`** — a NEW pure sibling of `cmdit_parse_argv`: one pass
+  that applies registered global flags **before OR after** the verb (the fix for
+  ark's double-scan), matches the first non-flag token against the verb table, and
+  compacts a globals-removed **remainder slice** (`argv[0]` = verb name) for the
+  caller to re-parse. **`cmdit_dispatch`** = materialize + dispatch + finalize the
+  global scope. **`cmdit_verb_matched`** returns the matched canonical id (-1 = no
+  verb token, distinct from an UNKNOWN_VERB error). **`cmdit_verb_argc`** /
+  **`cmdit_verb_argv`** expose the remainder.
+- **`cmdit_parse_verb`** — sugar: re-parse the remainder in a per-verb handle +
+  finalize. **Nested sub-verbs** are just re-entry on the remainder (no in-core
+  tree — the roadmap bent here; depth-2 max in real code).
+- **`cmdit_basename`** — interior-pointer basename of `argv[0]` for the busybox
+  multiplexer (with the existing `cmdit_raw_argv` escape), caller-side and opt-in.
+- **`cmdit_require_positionals`** — the deferred-from-0.2.0 minimum positional-count
+  gate (`CMDIT_ERR_MISSING_POSITIONAL`); works on the global or any verb handle.
+  Subsumes cyim's `if (r_npos < N)` guards.
+- **`cmdit_verbs_help`** — generated `Commands:` listing (alias rows skipped);
+  appended by `cmdit_help` and printed by `cmdit_print_error` on an unknown verb,
+  so the command list never drifts from registration.
+- **Help/version deferral** — a `--help`/`--version` *after* the verb defers into
+  the verb scope (`tool build --help` → verb help), while *before* the verb it
+  fires global help (`tool --help` → global help + command list).
+- **Error taxonomy** — `CMDIT_ERR_UNKNOWN_VERB=8` (`<prog>: unknown command: <x>`
+  + command list) / `CMDIT_ERR_MISSING_POSITIONAL=9` (`missing required argument`),
+  both exit 2.
+- **Tests** — `tests/cmdit.tcyr` grown 107 → **157 assertions** over verb
+  match/alias/unknown, global-before/after, deferral, `--` handling, remainder
+  re-parse, nested re-entry, `require_positionals`, and `cmdit_basename`. Demo:
+  `programs/verbs.cyr`.
+
+### Changed
+- Context struct 104 → 160 B (append-only; entry struct unchanged at 104 B).
+
+### Scope (not subsumed — stays caller-side)
+- In-core nested-verb trees (use re-entry on the remainder).
+- The argv[0] multiplexer *policy* (which basenames map to which verbs) — cmdit
+  ships only `cmdit_basename`.
+- Handler invocation / signatures — cmdit returns an id + slice, never calls a handler.
+- Interactive REPL / slash-command DSLs (agora/agnoshi/thoth).
+
 ## [0.2.0] - Unreleased
 
 **Flag modifiers (M2).** Five append-only parse-loop primitives that subsume the

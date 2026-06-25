@@ -350,6 +350,139 @@ fn main() {
     var avz = alloc(2 * 8); store64(avz, "t"); store64(avz + 8, "--help");
     assert(cmdit_parse_argv(hz, 2, avz) == CMDIT_HELP, "--help short-circuits before required");
 
+    # --- 0.3.0 verb dispatch + positionals -----------------------------------
+
+    test_group("basename: strips directory; passthrough when none");
+    assert(cstreq(cmdit_basename("/usr/bin/kriya"), "kriya") == 1, "/usr/bin/kriya -> kriya");
+    assert(cstreq(cmdit_basename("kriya"), "kriya") == 1, "bare name passthrough");
+    assert(cstreq(cmdit_basename("./cp"), "cp") == 1, "./cp -> cp");
+
+    test_group("verb: match -> matched id + remainder slice");
+    var hv1 = cmdit_new("t");
+    var v_add = cmdit_verb(hv1, "add", "add a thing");
+    var v_rm = cmdit_verb(hv1, "remove", "remove a thing");
+    var dv1 = alloc(2 * 8); store64(dv1, "t"); store64(dv1 + 8, "add");
+    assert(cmdit_dispatch_argv(hv1, 2, dv1) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_verb_matched(hv1) == v_add, "matched = add id");
+    assert(cmdit_verb_argc(hv1) == 1, "remainder argc = 1");
+    assert(cstreq(load64(cmdit_verb_argv(hv1)), "add") == 1, "remainder[0] = verb name");
+
+    test_group("verb: alias resolves to canonical id");
+    var vb2 = cmdit_new("t");
+    var v_inst = cmdit_verb(vb2, "install", "");
+    cmdit_verb_alias(vb2, v_inst, "i");
+    var dv2 = alloc(2 * 8); store64(dv2, "t"); store64(dv2 + 8, "i");
+    assert(cmdit_dispatch_argv(vb2, 2, dv2) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_verb_matched(vb2) == v_inst, "alias i -> install id");
+
+    test_group("verb: unknown -> UNKNOWN_VERB");
+    var vb3 = cmdit_new("t");
+    cmdit_verb(vb3, "add", "");
+    var dv3 = alloc(2 * 8); store64(dv3, "t"); store64(dv3 + 8, "bogus");
+    assert(cmdit_dispatch_argv(vb3, 2, dv3) == CMDIT_RESULT_ERR, "unknown verb -> RESULT_ERR");
+    assert(cmdit_error(vb3) == CMDIT_ERR_UNKNOWN_VERB, "error = UNKNOWN_VERB");
+
+    test_group("verb: no verb token -> matched -1");
+    var vb4 = cmdit_new("t");
+    cmdit_bool(vb4, 0, "verbose", ""); cmdit_verb(vb4, "add", "");
+    var dv4 = alloc(2 * 8); store64(dv4, "t"); store64(dv4 + 8, "--verbose");
+    assert(cmdit_dispatch_argv(vb4, 2, dv4) == CMDIT_OK, "globals-only dispatch OK");
+    assert(cmdit_verb_matched(vb4) == 0 - 1, "no verb -> matched -1");
+
+    test_group("verb: global flag BEFORE verb is applied; verb still matched");
+    var vb5 = cmdit_new("t");
+    var g5 = cmdit_bool(vb5, 0, "verbose", ""); var a5 = cmdit_verb(vb5, "add", "");
+    var dv5 = alloc(3 * 8); store64(dv5, "t"); store64(dv5 + 8, "--verbose"); store64(dv5 + 16, "add");
+    assert(cmdit_dispatch_argv(vb5, 3, dv5) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_get_bool(vb5, g5) == 1, "--verbose applied (before verb)");
+    assert(cmdit_verb_matched(vb5) == a5, "verb = add");
+    assert(cmdit_verb_argc(vb5) == 1, "remainder is just [add] (global plucked)");
+
+    test_group("verb: global flag AFTER verb is applied (the double-scan fix)");
+    var vb6 = cmdit_new("t");
+    var g6 = cmdit_bool(vb6, 0, "verbose", ""); cmdit_verb(vb6, "add", "");
+    var dv6 = alloc(3 * 8); store64(dv6, "t"); store64(dv6 + 8, "add"); store64(dv6 + 16, "--verbose");
+    assert(cmdit_dispatch_argv(vb6, 3, dv6) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_get_bool(vb6, g6) == 1, "--verbose applied (after verb)");
+    assert(cmdit_verb_argc(vb6) == 1, "remainder = [add] (after-verb global plucked)");
+
+    test_group("verb: global str BEFORE verb consumes its value");
+    var hv7 = cmdit_new("t");
+    var g7 = cmdit_str(hv7, 0, "config", 0, ""); var a7 = cmdit_verb(hv7, "add", "");
+    var dv7 = alloc(4 * 8); store64(dv7, "t"); store64(dv7 + 8, "--config"); store64(dv7 + 16, "c.toml"); store64(dv7 + 24, "add");
+    assert(cmdit_dispatch_argv(hv7, 4, dv7) == CMDIT_OK, "dispatch OK");
+    assert(cstreq(cmdit_get_str(hv7, g7), "c.toml") == 1, "--config consumed its value");
+    assert(cmdit_verb_matched(hv7) == a7, "verb = add");
+
+    test_group("verb: unknown flag AFTER verb is deferred to the remainder");
+    var hv8 = cmdit_new("t");
+    var g8 = cmdit_bool(hv8, 0, "verbose", ""); cmdit_verb(hv8, "add", "");
+    var dv8 = alloc(4 * 8); store64(dv8, "t"); store64(dv8 + 8, "add"); store64(dv8 + 16, "--force"); store64(dv8 + 24, "x");
+    assert(cmdit_dispatch_argv(hv8, 4, dv8) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_get_bool(hv8, g8) == 0, "global --verbose untouched");
+    assert(cmdit_verb_argc(hv8) == 3, "remainder = [add, --force, x]");
+    assert(cstreq(load64(cmdit_verb_argv(hv8) + 8), "--force") == 1, "remainder[1] = --force");
+
+    test_group("verb: help BEFORE verb -> CMDIT_HELP; AFTER verb -> deferred");
+    var hv9 = cmdit_new("t");
+    cmdit_verb(hv9, "add", "");
+    var dv9 = alloc(2 * 8); store64(dv9, "t"); store64(dv9 + 8, "--help");
+    assert(cmdit_dispatch_argv(hv9, 2, dv9) == CMDIT_HELP, "--help before verb -> CMDIT_HELP");
+    var hv9b = cmdit_new("t");
+    cmdit_verb(hv9b, "add", "");
+    var dv9b = alloc(3 * 8); store64(dv9b, "t"); store64(dv9b + 8, "add"); store64(dv9b + 16, "--help");
+    assert(cmdit_dispatch_argv(hv9b, 3, dv9b) == CMDIT_OK, "--help after verb -> OK (deferred)");
+    assert(cmdit_verb_argc(hv9b) == 2, "remainder = [add, --help] for verb scope");
+
+    test_group("verb: '--' before verb still lets the next token be the verb");
+    var hv10 = cmdit_new("t");
+    var a10 = cmdit_verb(hv10, "add", "");
+    var dv10 = alloc(3 * 8); store64(dv10, "t"); store64(dv10 + 8, "--"); store64(dv10 + 16, "add");
+    assert(cmdit_dispatch_argv(hv10, 3, dv10) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_verb_matched(hv10) == a10, "verb = add after --");
+
+    test_group("verb: re-parse the remainder in a per-verb handle");
+    var hp1 = cmdit_new("tool");
+    cmdit_verb(hp1, "add", "");
+    var dp1 = alloc(5 * 8);
+    store64(dp1, "tool"); store64(dp1 + 8, "add"); store64(dp1 + 16, "--name"); store64(dp1 + 24, "bob"); store64(dp1 + 32, "file.txt");
+    assert(cmdit_dispatch_argv(hp1, 5, dp1) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_verb_argc(hp1) == 4, "remainder = [add, --name, bob, file.txt]");
+    var vh1 = cmdit_new("tool add");
+    var vn1 = cmdit_str(vh1, 0, "name", 0, "");
+    assert(cmdit_parse_verb(vh1, hp1) == CMDIT_OK, "verb scope parse OK");
+    assert(cstreq(cmdit_get_str(vh1, vn1), "bob") == 1, "verb flag --name = bob");
+    assert(cmdit_positional_count(vh1) == 1, "verb positional captured");
+    assert(cstreq(cmdit_positional(vh1, 0), "file.txt") == 1, "verb positional = file.txt");
+
+    test_group("verb: nested sub-verb via re-entry on the remainder");
+    var hn = cmdit_new("tool");
+    cmdit_verb(hn, "remote", "");
+    var dn = alloc(4 * 8); store64(dn, "tool"); store64(dn + 8, "remote"); store64(dn + 16, "add"); store64(dn + 24, "origin");
+    assert(cmdit_dispatch_argv(hn, 4, dn) == CMDIT_OK, "parent dispatch OK");
+    var sh = cmdit_new("tool remote");
+    var sv_add = cmdit_verb(sh, "add", "");
+    assert(cmdit_dispatch_argv(sh, cmdit_verb_argc(hn), cmdit_verb_argv(hn)) == CMDIT_OK, "sub dispatch OK");
+    assert(cmdit_verb_matched(sh) == sv_add, "sub verb = add");
+    assert(cmdit_verb_argc(sh) == 2, "sub remainder = [add, origin]");
+    assert(cstreq(load64(cmdit_verb_argv(sh) + 8), "origin") == 1, "sub remainder[1] = origin");
+
+    test_group("require_positionals: count gate");
+    var hpp = cmdit_new("t");
+    var dpp = alloc(3 * 8); store64(dpp, "t"); store64(dpp + 8, "a"); store64(dpp + 16, "b");
+    assert(cmdit_parse_argv(hpp, 3, dpp) == CMDIT_OK, "parse OK (2 positionals)");
+    assert(cmdit_require_positionals(hpp, 2) == CMDIT_OK, "min 2 satisfied");
+    assert(cmdit_require_positionals(hpp, 3) == CMDIT_RESULT_ERR, "min 3 not met -> err");
+    assert(cmdit_error(hpp) == CMDIT_ERR_MISSING_POSITIONAL, "error = MISSING_POSITIONAL");
+
+    test_group("verb: global required satisfied at finalize after dispatch");
+    var hgr = cmdit_new("t");
+    var gr = cmdit_str(hgr, 0, "config", 0, ""); cmdit_required(hgr, gr); cmdit_verb(hgr, "add", "");
+    var dgr = alloc(2 * 8); store64(dgr, "t"); store64(dgr + 8, "add");
+    assert(cmdit_dispatch_argv(hgr, 2, dgr) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_finalize(hgr) == CMDIT_RESULT_ERR, "missing global required -> finalize err");
+    assert(cmdit_error(hgr) == CMDIT_ERR_REQUIRED_MISSING, "error = REQUIRED_MISSING");
+
     return assert_summary();
 }
 

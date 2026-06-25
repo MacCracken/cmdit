@@ -1,0 +1,78 @@
+# cmdit verb-dispatch demo — proves cmdit_verb / cmdit_dispatch + per-verb scopes
+# + global-before-or-after-verb + the argv[0] multiplexer compile, link, and run.
+# Build: cyrius build programs/verbs.cyr build/cmdit-verbs
+# Try:   ./build/cmdit-verbs add --name bob file.txt
+#        ./build/cmdit-verbs --verbose add file.txt        # global before the verb
+#        ./build/cmdit-verbs add --verbose file.txt        # global AFTER the verb
+#        ./build/cmdit-verbs rm -f a b                      # alias 'rm' -> remove
+#        ./build/cmdit-verbs bogus                          # unknown command + list
+#        ./build/cmdit-verbs --help                         # global help + command list
+#
+# stdlib-only project, so the entry includes its stdlib explicitly (like smoke).
+include "lib/vec.cyr"
+include "lib/args.cyr"
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/io.cyr"
+include "src/cmdit.cyr"
+
+fn _putc(ch): i64 { var b[8]; store8(&b, ch); sys_write(1, &b, 1); return 0; }
+fn puts(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
+
+# verb ids (cmdit_verb returns these in registration order)
+var V_ADD = 0;
+var V_REMOVE = 1;
+
+# `add` verb scope: parses its own flags off the remainder slice.
+fn run_add(h): i64 {
+    var vh = cmdit_new("verbs add");
+    var f_name = cmdit_str(vh, 110, "name", 0, "name to add");       # -n / --name
+    var vr = cmdit_parse_verb(vh, h);                                # --help/--version defer into verb scope
+    if (vr == CMDIT_HELP)       { cmdit_help(vh); return CMDIT_EXIT_OK; }
+    if (vr == CMDIT_VERSION)    { return cmdit_version(vh, "cmdit-verbs 0.3.0"); }
+    if (vr == CMDIT_RESULT_ERR) { cmdit_print_error(vh); return CMDIT_EXIT_USAGE; }
+    puts("add: name="); var nm = cmdit_get_str(vh, f_name);
+    if (nm != 0) { puts(nm); } else { puts("(none)"); }
+    puts(" files="); fmt_int(cmdit_positional_count(vh)); _putc(10);
+    var i = 0;
+    while (i < cmdit_positional_count(vh)) { puts("  "); puts(cmdit_positional(vh, i)); _putc(10); i = i + 1; }
+    return CMDIT_EXIT_OK;
+}
+
+# `remove` verb scope: a -f/--force bool + at least one positional (require_positionals).
+fn run_remove(h): i64 {
+    var vh = cmdit_new("verbs remove");
+    var f_force = cmdit_bool(vh, 102, "force", "force removal");     # -f / --force
+    var vr = cmdit_parse_verb(vh, h);
+    if (vr == CMDIT_HELP)       { cmdit_help(vh); return CMDIT_EXIT_OK; }
+    if (vr == CMDIT_VERSION)    { return cmdit_version(vh, "cmdit-verbs 0.3.0"); }
+    if (vr == CMDIT_RESULT_ERR) { cmdit_print_error(vh); return CMDIT_EXIT_USAGE; }
+    if (cmdit_require_positionals(vh, 1) == CMDIT_RESULT_ERR) { cmdit_print_error(vh); return CMDIT_EXIT_USAGE; }
+    puts("remove: force="); fmt_int(cmdit_get_bool(vh, f_force));
+    puts(" count="); fmt_int(cmdit_positional_count(vh)); _putc(10);
+    return CMDIT_EXIT_OK;
+}
+
+fn main(): i64 {
+    var h = cmdit_new("verbs");
+    cmdit_bool(h, 0, "verbose", "global: be verbose");              # a global flag (before OR after verb)
+    cmdit_verb(h, "add", "add a thing");                            # V_ADD
+    cmdit_verb(h, "remove", "remove a thing");                      # V_REMOVE
+    cmdit_verb_alias(h, V_REMOVE, "rm");
+
+    var r = cmdit_dispatch(h);
+    if (r == CMDIT_HELP)       { cmdit_help(h); return CMDIT_EXIT_OK; }
+    if (r == CMDIT_VERSION)    { return cmdit_version(h, "cmdit-verbs 0.3.0"); }
+    if (r == CMDIT_RESULT_ERR) { cmdit_print_error(h); return CMDIT_EXIT_USAGE; }   # unknown verb lists commands
+
+    if (cmdit_get_bool(h, 2) == 1) { puts("[verbose]\n"); }         # global flag (idx 2: after help/version)
+    if (cmdit_verb_matched(h) == 0 - 1) { puts("no command given\n"); cmdit_help(h); return CMDIT_EXIT_USAGE; }
+
+    var v = cmdit_verb_matched(h);
+    if (v == V_ADD)    { return run_add(h); }
+    if (v == V_REMOVE) { return run_remove(h); }
+    return CMDIT_EXIT_OK;
+}
+
+fn _entry(): i64 { var r = main(); sys_exit(r); return 0; }
+_entry();

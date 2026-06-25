@@ -8,8 +8,8 @@
 
 The bar for tagging cmdit v1.0 (freeze the public API). Filled in as the 0.1 → 0.3 arc lands:
 
-- [ ] Public API frozen — every exported symbol documented and tested (gate: once 0.3.0 verbs land and the surface stops growing)
-- [ ] Test coverage adequate for the surface area (0.1.0: 26/26 over the pure parser core; extend per milestone)
+- [ ] Public API frozen — every exported symbol documented and tested (0.3.0 verbs landed; the surface is now feature-complete — freeze pass pending)
+- [x] Test coverage adequate for the surface area — **157/157** over the pure parser + modifier + verb-dispatch cores (extended per milestone)
 - [ ] Benchmarks captured in `docs/benchmarks.md`
 - [x] At least one downstream consumer green — **kii 1.1.0** (the re-fold; 468/468 tests, render verified)
 - [ ] CHANGELOG complete from v0.1.0 onward
@@ -49,13 +49,20 @@ site-by-site against the consumer repos before landing:
   extended taxonomy documented. See [`../adr/0001-flag-modifiers.md`](../adr/0001-flag-modifiers.md).
 - Deferred to 0.3.0: `cmdit_require_positionals` (positional-count validation).
 
-### M3 — verb / subcommand dispatch (v0.3.0)
+### M3 — verb / subcommand dispatch (v0.3.0) — ✅ shipped 2026-06-25
 
-`cmdit_verb` / `cmdit_verb_alias` / `cmdit_dispatch` + nested sub-verbs +
-global-flags-before-or-after-verb resolution (fixes ark's double-scan). Covers
-the ~9 subcommand tools (ark, sit, takumi, hapi, phylax, agnova, hadara, hoosh).
-Multiplexer (kriya, argv[0] basename) via the raw-argv slice + a `cmdit_basename`
-helper.
+`cmdit_verb` / `cmdit_verb_alias` / `cmdit_dispatch` (identify-and-return) +
+global-flags-before-or-after-verb resolution in one pass (fixes ark's double-scan)
++ `cmdit_verb_matched` / `cmdit_verb_argc/argv` + `cmdit_parse_verb`. Covers the ~9
+subcommand tools (ark, sit, takumi, hapi, phylax, agnova, hadara, hoosh, cyim).
+Multiplexer (kriya, argv[0] basename) via `cmdit_raw_argv` + a `cmdit_basename`
+helper. Plus the deferred `cmdit_require_positionals` and a generated
+`cmdit_verbs_help` command list. **157/157 tests**; demo `programs/verbs.cyr`.
+See [`../adr/0002-verb-dispatch.md`](../adr/0002-verb-dispatch.md).
+
+**The roadmap bent on "nested sub-verbs":** shipped as re-entry on the remainder
+slice (a child handle re-dispatches), not an in-core verb tree — every production
+tool is depth ≤ 2 and the re-entry model is unbounded with zero extra API.
 
 ## Adoption (post-0.1.0)
 

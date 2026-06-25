@@ -5,14 +5,21 @@
 
 ## Version
 
+**0.3.0** — Unreleased (built 2026-06-25). Verb / subcommand dispatch (M3):
+`cmdit_verb` / `cmdit_verb_alias` / `cmdit_dispatch` (identify-and-return) +
+`cmdit_verb_matched` / `cmdit_verb_argc/argv` + `cmdit_parse_verb` (per-verb scope
+re-entry; nested verbs are re-entry, not an in-core tree) + `cmdit_basename` (argv[0]
+multiplexer) + `cmdit_verbs_help` + the deferred `cmdit_require_positionals`.
+Globals bind before OR after the verb in one pass (the ark double-scan fix); the
+pure `cmdit_parse_argv` core is untouched and `cmdit_dispatch_argv` is its pure
+sibling. Ctx grown 104→160 B (append-only; entry struct unchanged). **157 tests**
+green; `dist/cmdit.cyr` regenerated; demo `programs/verbs.cyr`. Grounded by a
+site-by-site re-survey of the subcommand tools.
+
 **0.2.0** — Unreleased (built 2026-06-25). Flag modifiers (M2): `cmdit_enum` /
-`cmdit_repeat` / `cmdit_required` / `cmdit_range` / `cmdit_env` + the forced
-companions `cmdit_get_enum` (index dispatch), `cmdit_seen`, and `cmdit_finalize`
-(the impure env+required post-stage, kept out of the pure parse core). Entry
-struct grown 48→104 B and ctx 96→104 B (both append-only; types stay
-byte-compatible). Flag-named errors + enriched generated help. Smoke + **88 tests**
-green; `dist/cmdit.cyr` regenerated. Grounded by a site-by-site re-survey of the
-hand-rolled patterns across the consumer repos.
+`cmdit_repeat` / `cmdit_required` / `cmdit_range` / `cmdit_env` + `cmdit_get_enum`
+(index dispatch), `cmdit_seen`, and `cmdit_finalize` (the impure env+required
+post-stage). Entry struct grown 48→104 B; flag-named errors + enriched help. 88 tests.
 
 **0.1.0** — Unreleased (built 2026-06-25). The extraction cut: stdlib `lib/flags.cyr`
 productized as a standalone distlib + the universal additions (materialize bridge,
@@ -29,22 +36,24 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 - `src/cmdit.cyr` — the library (the `[lib]` module; forked from cyrius stdlib
   `lib/flags.cyr`, byte-compatible types/error-codes, renamed to `cmdit_*`, +
   materialize bridge / auto help+version / exit constants / raw-argv escape; 0.2.0
-  flag modifiers). Entry struct 104 B, ctx 104 B (append-only). The pure
-  `cmdit_parse_argv` core is `/proc`- and env-free; env + required run in the
-  separate `cmdit_finalize` (chained by `cmdit_parse`).
-- `programs/smoke.cyr` — real-argv demo + compile-link smoke (exercises
-  enum/range/repeat/env + flag-named errors).
+  flag modifiers; 0.3.0 verb dispatch). Entry struct 104 B, ctx 160 B (append-only);
+  verbs are a separate lazy-allocated table. The pure `cmdit_parse_argv` core is
+  `/proc`- and env-free; `cmdit_dispatch_argv` is its pure verb-dispatch sibling;
+  env + required run in `cmdit_finalize` (chained by `cmdit_parse`/`cmdit_dispatch`).
+- `programs/smoke.cyr` — single-command demo (enum/range/repeat/env + flag-named errors).
+- `programs/verbs.cyr` — verb-dispatch demo (verb/alias/global-before-after/
+  per-verb scope/require_positionals/unknown-verb list).
 - `dist/cmdit.cyr` — generated bundle (`cyrius distlib`); consumers import this.
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **88/88**. The 26 pure-core cases (bool/int/str/positional,
-  `=value`, `--`, lone `-`, unknown/missing-value/bad-int/bundled, auto
-  help/version, defaults) plus the 0.2.0 modifier groups: enum (valid/`=value`/
-  invalid→BAD_ENUM/default index), range (inclusive bounds/out-of-range), required
-  (present/absent/bool absent-vs-false/seen), repeat (accumulate/order/last-wins/
-  empty), env (purity boundary, CLI-wins, unset→default, bool presence,
-  required-via-env, non-fatal bad value). Env positives guard on `getenv("HOME")`.
+- `tests/cmdit.tcyr` — **157/157**. The 26 pure-core cases + the 0.2.0 modifier
+  groups (enum/range/required/repeat/env + purity boundary) + the 0.3.0 verb groups:
+  `cmdit_basename`, verb match/alias/unknown-verb, no-verb→-1, global flag
+  before/after the verb (+ value consumption), unknown-flag deferral, help
+  before→HELP / after→deferred, `--` handling, remainder re-parse in a per-verb
+  handle, nested sub-verb re-entry, `require_positionals`, global-required at
+  finalize. Env positives guard on `getenv("HOME")`.
 - `tests/cmdit.bcyr` / `.fcyr` — benchmark / fuzz stubs.
 
 ## Dependencies
@@ -67,6 +76,8 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Next
 
-0.3.0 verb / subcommand dispatch (`cmdit_verb`/`cmdit_dispatch`, nested sub-verbs,
-before-or-after globals, multiplexer) + the deferred `cmdit_require_positionals`.
-See [`roadmap.md`](roadmap.md) + `agnosticos/docs/development/planning/cmdit.md`.
+Toward v1.0: API-freeze pass (every exported symbol documented + tested), benchmarks
+in `docs/benchmarks.md`, a security-audit pass, and CHANGELOG completeness. The
+0.1→0.3 verb/modifier arc is feature-complete; remaining work is hardening +
+adoption (kii green; the Tier-1/2/3 drop-ins are demand-gated). See
+[`roadmap.md`](roadmap.md) + `agnosticos/docs/development/planning/cmdit.md`.
