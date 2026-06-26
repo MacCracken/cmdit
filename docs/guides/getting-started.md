@@ -11,14 +11,14 @@ cyrius test                                            # run tests/*.tcyr
 
 ## Layout
 
-- `src/main.cyr` — library module (header). Add domain modules in sibling `src/` files; `programs/smoke.cyr` proves the include chain compiles.
+- `src/cmdit.cyr` — the library (the sole source module). `programs/smoke.cyr` proves the include chain compiles.
 - `programs/smoke.cyr` — minimal end-to-end smoke. CI builds this on every push.
 - `tests/cmdit.tcyr` — test cases. Use `assert_eq` / `assert` and exit with `assert_summary()`.
 - `dist/cmdit.cyr` — single-file bundle produced by `cyrius distlib`. Consumers `include` this from their own `cyrius.cyml [deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
 ## Adding a feature
 
-1. Edit `src/main.cyr` (or add a new module and `include` it).
+1. Edit `src/cmdit.cyr` (or add a new module and `include` it).
 2. Add a test case to `tests/cmdit.tcyr`.
 3. Run `cyrius test`.
 4. `cyrius distlib` to regenerate the bundle.

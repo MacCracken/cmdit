@@ -29,7 +29,7 @@ fn run_add(h): i64 {
     var f_name = cmdit_str(vh, 110, "name", 0, "name to add");       # -n / --name
     var vr = cmdit_parse_verb(vh, h);                                # --help/--version defer into verb scope
     if (vr == CMDIT_HELP)       { cmdit_help(vh); return CMDIT_EXIT_OK; }
-    if (vr == CMDIT_VERSION)    { return cmdit_version(vh, "cmdit-verbs 0.3.0"); }
+    if (vr == CMDIT_VERSION)    { return cmdit_version(vh, "cmdit-verbs 1.0.0"); }
     if (vr == CMDIT_RESULT_ERR) { cmdit_print_error(vh); return CMDIT_EXIT_USAGE; }
     puts("add: name="); var nm = cmdit_get_str(vh, f_name);
     if (nm != 0) { puts(nm); } else { puts("(none)"); }
@@ -45,7 +45,7 @@ fn run_remove(h): i64 {
     var f_force = cmdit_bool(vh, 102, "force", "force removal");     # -f / --force
     var vr = cmdit_parse_verb(vh, h);
     if (vr == CMDIT_HELP)       { cmdit_help(vh); return CMDIT_EXIT_OK; }
-    if (vr == CMDIT_VERSION)    { return cmdit_version(vh, "cmdit-verbs 0.3.0"); }
+    if (vr == CMDIT_VERSION)    { return cmdit_version(vh, "cmdit-verbs 1.0.0"); }
     if (vr == CMDIT_RESULT_ERR) { cmdit_print_error(vh); return CMDIT_EXIT_USAGE; }
     if (cmdit_require_positionals(vh, 1) == CMDIT_RESULT_ERR) { cmdit_print_error(vh); return CMDIT_EXIT_USAGE; }
     puts("remove: force="); fmt_int(cmdit_get_bool(vh, f_force));
@@ -62,7 +62,7 @@ fn main(): i64 {
 
     var r = cmdit_dispatch(h);
     if (r == CMDIT_HELP)       { cmdit_help(h); return CMDIT_EXIT_OK; }
-    if (r == CMDIT_VERSION)    { return cmdit_version(h, "cmdit-verbs 0.3.0"); }
+    if (r == CMDIT_VERSION)    { return cmdit_version(h, "cmdit-verbs 1.0.0"); }
     if (r == CMDIT_RESULT_ERR) { cmdit_print_error(h); return CMDIT_EXIT_USAGE; }   # unknown verb lists commands
 
     if (cmdit_get_bool(h, 2) == 1) { puts("[verbose]\n"); }         # global flag (idx 2: after help/version)

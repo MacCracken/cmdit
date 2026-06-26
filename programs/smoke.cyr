@@ -1,5 +1,6 @@
 # cmdit smoke / demo — proves the library compiles + links end-to-end and shows
-# real-argv parsing, now exercising the 0.2.0 flag modifiers.
+# real-argv parsing, exercising the flag modifiers (enum/range/repeat/env) + the
+# 1.0.0 metavar and shown-default help rendering.
 # Build: cyrius build programs/smoke.cyr build/cmdit-smoke
 # Try:   ./build/cmdit-smoke --name bob -c 3 --loud --color always -H 'A: 1' -H 'B: 2' file.txt
 #        ./build/cmdit-smoke --color purple        # -> BAD_ENUM, names the flag + valid set
@@ -25,6 +26,7 @@ fn main(): i64 {
     var h = cmdit_new("cmdit-smoke");
     var f_name  = cmdit_str (h, 110, "name", 0, "a name (env: CMDIT_NAME)");      # -n / --name
     cmdit_env(h, f_name, "CMDIT_NAME");                                           #   env fallback
+    cmdit_metavar(h, f_name, "NAME");                                            #   help shows --name <NAME>
     var f_count = cmdit_int (h, 99, "count", 1, "repeat count (1..10)");          # -c / --count
     cmdit_range(h, f_count, 1, 10);                                              #   bounded
     var f_loud  = cmdit_bool(h, 0, "loud", "be loud (no short form)");           # --loud
@@ -33,7 +35,7 @@ fn main(): i64 {
 
     var r = cmdit_parse(h);
     if (r == CMDIT_HELP)    { cmdit_help(h); return CMDIT_EXIT_OK; }
-    if (r == CMDIT_VERSION) { return cmdit_version(h, "cmdit 0.2.0"); }
+    if (r == CMDIT_VERSION) { return cmdit_version(h, "1.0.0"); }
     if (r == CMDIT_RESULT_ERR) { cmdit_print_error(h); cmdit_help(h); return CMDIT_EXIT_USAGE; }
 
     puts("cmdit smoke: parsed OK\n");

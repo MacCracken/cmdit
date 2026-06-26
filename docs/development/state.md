@@ -5,7 +5,19 @@
 
 ## Version
 
-**0.3.0** — Unreleased (built 2026-06-25). Verb / subcommand dispatch (M3):
+**1.0.0** — Public API frozen (built 2026-06-25). M4 completeness delta + the v1.0
+freeze, grounded by a 23-repo re-survey of hand-rolled CLI code (confirmed the surface
+complete) and an adversarial security/readiness audit. Added: `cmdit_help_short` /
+`cmdit_version_short` (remap/disable the auto `-h`/`-V`), `cmdit_metavar` + shown string
+defaults in help, `cmdit_require_positionals_max` / `_exact` (`TOO_MANY_POSITIONAL = 10`).
+Fixed (audit): `_cmdit_parse_int` overflow range-bypass, unguarded getter idx. Entry
+struct grown 104→112 B (metavar at +104; append-only). The whole output/renderer surface
+is now tested. **230 tests** green; benchmarks ([`benchmarks.md`](benchmarks.md)) +
+security audit ([`audit/2026-06-25-audit.md`](audit/2026-06-25-audit.md)); the
+public/internal constant boundary is delimited in [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md).
+`dist/cmdit.cyr` regenerated.
+
+**0.3.0** — built 2026-06-25. Verb / subcommand dispatch (M3):
 `cmdit_verb` / `cmdit_verb_alias` / `cmdit_dispatch` (identify-and-return) +
 `cmdit_verb_matched` / `cmdit_verb_argc/argv` + `cmdit_parse_verb` (per-verb scope
 re-entry; nested verbs are re-entry, not an in-core tree) + `cmdit_basename` (argv[0]
@@ -36,7 +48,8 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 - `src/cmdit.cyr` — the library (the `[lib]` module; forked from cyrius stdlib
   `lib/flags.cyr`, byte-compatible types/error-codes, renamed to `cmdit_*`, +
   materialize bridge / auto help+version / exit constants / raw-argv escape; 0.2.0
-  flag modifiers; 0.3.0 verb dispatch). Entry struct 104 B, ctx 160 B (append-only);
+  flag modifiers; 0.3.0 verb dispatch; 1.0.0 `help_short`/`version_short` + `metavar`
+  + `require_positionals_max`/`_exact`). Entry struct 112 B, ctx 160 B (append-only);
   verbs are a separate lazy-allocated table. The pure `cmdit_parse_argv` core is
   `/proc`- and env-free; `cmdit_dispatch_argv` is its pure verb-dispatch sibling;
   env + required run in `cmdit_finalize` (chained by `cmdit_parse`/`cmdit_dispatch`).
@@ -47,14 +60,18 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **157/157**. The 26 pure-core cases + the 0.2.0 modifier
-  groups (enum/range/required/repeat/env + purity boundary) + the 0.3.0 verb groups:
-  `cmdit_basename`, verb match/alias/unknown-verb, no-verb→-1, global flag
-  before/after the verb (+ value consumption), unknown-flag deferral, help
-  before→HELP / after→deferred, `--` handling, remainder re-parse in a per-verb
-  handle, nested sub-verb re-entry, `require_positionals`, global-required at
-  finalize. Env positives guard on `getenv("HOME")`.
-- `tests/cmdit.bcyr` / `.fcyr` — benchmark / fuzz stubs.
+- `tests/cmdit.tcyr` — **230/230**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+  groups, plus the 1.0.0 hardening: the full output/renderer surface
+  (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
+  `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
+  i64-max boundary, getter idx guards, negative-int parse, unknown-short /
+  short-missing-value, enum prefix rejection, dispatch pre-verb-unknown + dispatch
+  missing-value, `CMDIT_FLAGS_MAX`/`CMDIT_VERB_MAX` cap returns, `cmdit_new(0)`
+  argv[0] adoption, and the C5/C3/C1 groups (`help_short`/`version_short` remap+disable,
+  metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
+- `tests/cmdit.bcyr` — **8 real benchmarks** (`cmdit_new` floor, register/parse
+  subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate);
+  see [`benchmarks.md`](benchmarks.md). `tests/cmdit.fcyr` — fuzz stub.
 
 ## Dependencies
 
@@ -76,8 +93,12 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Next
 
-Toward v1.0: API-freeze pass (every exported symbol documented + tested), benchmarks
-in `docs/benchmarks.md`, a security-audit pass, and CHANGELOG completeness. The
-0.1→0.3 verb/modifier arc is feature-complete; remaining work is hardening +
-adoption (kii green; the Tier-1/2/3 drop-ins are demand-gated). See
-[`roadmap.md`](roadmap.md) + `agnosticos/docs/development/planning/cmdit.md`.
+**v1.0.0 is freeze-ready — all six roadmap criteria met** (API frozen + documented,
+230/230, benchmarks, kii green, CHANGELOG dated, security audit). The remaining action
+is the user's: tag `1.0.0` (git is user-owned). Post-v1: adoption (the Tier-1/2/3
+drop-ins are demand-gated; kii green) and the confirmed-deferred v2 backlog (mutex/
+required-if sugar, optional-value flags, bundled shorts, `--no-foo`, named-positional
+help, config cascades — see [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md)). A
+known, deferred micro-opt: `cmdit_new`'s byte-at-a-time entry memzero (the ~13.8 µs
+handle-construction floor) could be word-at-a-time (see [`benchmarks.md`](benchmarks.md)).
+See [`roadmap.md`](roadmap.md) + `agnosticos/docs/development/planning/cmdit.md`.

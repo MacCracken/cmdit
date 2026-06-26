@@ -5,7 +5,7 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v0.3.0 (verb dispatch). **License:** GPL-3.0-only. Distributed as
+**Status:** v1.0.0 — public API frozen. **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
 ## Why
@@ -89,6 +89,50 @@ if (v == 0) {
 
 See `programs/verbs.cyr` for a runnable demo.
 
+## v1.0 completeness delta
+
+The final surface a 23-repo re-survey of hand-rolled CLI code found still uncovered
+(all append-only — `CMDIT_BOOL/INT/STR` = {0,1,2} and every prior offset/error code
+are untouched; entry grew 104→112 B for the metavar):
+
+- **`cmdit_help_short(h, ch)` / `cmdit_version_short(h, ch)`** — remap (any ASCII
+  byte) or disable (`ch = 0`) the auto `-h` / `-V` short letters while keeping the
+  `--help`/`--version` long forms. Frees `-h` for a consumer's own flag (the
+  `df -h`/`ls -h` "human-readable" convention that hard-binding `-h`=help fights).
+- **`cmdit_metavar(h, idx, name)`** — override a value flag's generated help
+  placeholder (`--out <FILE>` instead of `<str>`); cosmetic, parsing-neutral. The
+  generated help now also shows the registered default of string flags
+  (`(default: …)`).
+- **`cmdit_require_positionals_max(h, max)` / `cmdit_require_positionals_exact(h, n)`**
+  — the upper-bound and both-bounds mirrors of `cmdit_require_positionals`; over the
+  max yields `CMDIT_ERR_TOO_MANY_POSITIONAL` (`too many arguments`, exit 2).
+
+## API reference (frozen surface)
+
+The full public surface. **Frozen at v1.0** — names, signatures, and semantics are
+stable; `CMDIT_*_SIZE` / `CMDIT_*_MAX` / `CMDIT_ATTR_*` are internal layout/cap
+constants, not API (do not depend on their values).
+
+- **Lifecycle:** `cmdit_new(prog)` → handle; `cmdit_argv(h)` (materialize bridge),
+  `cmdit_parse(h)` / `cmdit_parse_argv(h, argc, argv)` (pure), `cmdit_finalize(h)`,
+  `cmdit_dispatch(h)` / `cmdit_dispatch_argv(h, argc, argv)` (pure).
+- **Register:** `cmdit_bool` / `cmdit_int` / `cmdit_str` / `cmdit_enum` /
+  `cmdit_repeat`; modifiers `cmdit_required` / `cmdit_range` / `cmdit_env` /
+  `cmdit_metavar`; verbs `cmdit_verb` / `cmdit_verb_alias`; auto-flag config
+  `cmdit_help_short` / `cmdit_version_short`.
+- **Read:** `cmdit_get_bool` / `cmdit_get_int` / `cmdit_get_str` / `cmdit_get_enum`,
+  `cmdit_seen`, `cmdit_repeat_count` / `cmdit_repeat_get`, `cmdit_positional` /
+  `cmdit_positional_count`, `cmdit_verb_matched` / `cmdit_verb_argc` /
+  `cmdit_verb_argv`, `cmdit_raw_argv` / `cmdit_raw_argc`, `cmdit_basename`.
+- **Validate / errors:** `cmdit_require_positionals` / `_max` / `_exact`,
+  `cmdit_error` (last `CmditErr`), `cmdit_err_flag` (offending flag index).
+- **Output:** `cmdit_help` / `cmdit_verbs_help`, `cmdit_version`, `cmdit_print_error`.
+- **Result codes:** `CMDIT_OK` / `CMDIT_HELP` / `CMDIT_VERSION` / `CMDIT_RESULT_ERR`.
+  **Exit codes:** `CMDIT_EXIT_OK` (0) / `CMDIT_EXIT_RUN` (1) / `CMDIT_EXIT_USAGE` (2).
+  Note the two namespaces collide by value on purpose (`CMDIT_OK` = `CMDIT_EXIT_OK`
+  = 0; `CMDIT_HELP` = `CMDIT_EXIT_USAGE` = 2) — they are distinct concepts (parse
+  result vs process exit); never substitute one for the other.
+
 ## Usage
 
 ```cyrius
@@ -115,7 +159,7 @@ Consuming repos add to `cyrius.cyml`:
 ```cyml
 [deps.cmdit]
 git = "https://github.com/MacCracken/cmdit"
-tag = "0.3.0"
+tag = "1.0.0"
 modules = ["dist/cmdit.cyr"]
 ```
 
@@ -131,8 +175,11 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   `cmdit_range`, `cmdit_env`, `cmdit_finalize` + flag-named errors.
 - **0.3.0** — verb / subcommand dispatch (`cmdit_verb` / `cmdit_verb_alias` /
   `cmdit_dispatch`), before-or-after-verb globals, per-verb scopes + nested
-  re-entry, `cmdit_require_positionals`, `cmdit_basename` multiplexer (this cut).
-- **→ v1.0** — API freeze, benchmarks, security-audit pass.
+  re-entry, `cmdit_require_positionals`, `cmdit_basename` multiplexer.
+- **1.0.0** — the completeness delta (`cmdit_help_short`/`_version_short`,
+  `cmdit_metavar` + shown defaults, `cmdit_require_positionals_max`/`_exact`) plus
+  the freeze: API frozen, **230/230 tests**, [benchmarks](docs/benchmarks.md), and a
+  [security audit](docs/audit/2026-06-25-audit.md) pass (this cut).
 
 First consumer (re-fold): **kii** drops its in-repo flag-set wrapper for cmdit.
 
@@ -141,5 +188,6 @@ First consumer (re-fold): **kii** drops its in-repo flag-set wrapper for cmdit.
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (26/26)
+cyrius test                                          # run tests/*.tcyr  (230/230)
+cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

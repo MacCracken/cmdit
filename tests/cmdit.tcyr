@@ -82,6 +82,26 @@ fn main() {
     assert(cmdit_parse_argv(h7, 3, av7) == CMDIT_RESULT_ERR, "bad int -> RESULT_ERR");
     assert(cmdit_error(h7) == CMDIT_ERR_BAD_INT, "error code = BAD_INT");
 
+    test_group("error: int overflow rejected, not wrapped (no range bypass)");
+    var h7o = cmdit_new("t");
+    var c7o = cmdit_int(h7o, 99, "count", 1, "");
+    # 2^64+1 — a naive n=n*10+d accumulator would wrap to 1 and look valid.
+    var av7o = alloc(3 * 8); store64(av7o, "t"); store64(av7o + 8, "-c"); store64(av7o + 16, "18446744073709551617");
+    assert(cmdit_parse_argv(h7o, 3, av7o) == CMDIT_RESULT_ERR, "overflowing int -> RESULT_ERR");
+    assert(cmdit_error(h7o) == CMDIT_ERR_BAD_INT, "overflow reported as BAD_INT");
+    # the range-bypass it used to enable: wrap-to-1 would have passed 1..4096.
+    var h7r = cmdit_new("t");
+    var c7r = cmdit_int(h7r, 0, "width", 80, ""); cmdit_range(h7r, c7r, 1, 4096);
+    var av7r = alloc(3 * 8); store64(av7r, "t"); store64(av7r + 8, "--width"); store64(av7r + 16, "18446744073709551617");
+    assert(cmdit_parse_argv(h7r, 3, av7r) == CMDIT_RESULT_ERR, "overflow cannot wrap into range");
+    assert(cmdit_get_int(h7r, c7r) == 80, "default kept (no wrapped value stored)");
+    # boundary: the largest valid i64 still parses (overflow guard is not off-by-one).
+    var h7m = cmdit_new("t");
+    var c7m = cmdit_int(h7m, 99, "count", 1, "");
+    var av7m = alloc(3 * 8); store64(av7m, "t"); store64(av7m + 8, "-c"); store64(av7m + 16, "9223372036854775807");
+    assert(cmdit_parse_argv(h7m, 3, av7m) == CMDIT_OK, "i64 max still accepted");
+    assert(cmdit_get_int(h7m, c7m) == 9223372036854775807, "i64 max value stored exactly");
+
     test_group("error: bundled/attached short -> BUNDLED");
     var h8 = cmdit_new("t");
     var av8 = alloc(2 * 8); store64(av8, "t"); store64(av8 + 8, "-xy");
@@ -97,6 +117,25 @@ fn main() {
     var h10 = cmdit_new("t");
     var av10 = alloc(2 * 8); store64(av10, "t"); store64(av10 + 8, "-V");
     assert(cmdit_parse_argv(h10, 2, av10) == CMDIT_VERSION, "-V -> CMDIT_VERSION");
+
+    test_group("C5: remap / disable the auto -h / -V short letters");
+    var h5a = cmdit_new("t"); cmdit_help_short(h5a, 63);                          # remap help to '?'
+    var av5a = alloc(2 * 8); store64(av5a, "t"); store64(av5a + 8, "-?");
+    assert(cmdit_parse_argv(h5a, 2, av5a) == CMDIT_HELP, "remapped -? -> CMDIT_HELP");
+    var h5a2 = cmdit_new("t"); cmdit_help_short(h5a2, 63);
+    var av5a2 = alloc(2 * 8); store64(av5a2, "t"); store64(av5a2 + 8, "--help");
+    assert(cmdit_parse_argv(h5a2, 2, av5a2) == CMDIT_HELP, "--help long form survives the remap");
+    var h5b = cmdit_new("t"); cmdit_help_short(h5b, 0);                           # disable -h, free it
+    var fh5 = cmdit_bool(h5b, 104, "human", "");                                  # consumer's own -h
+    var av5b = alloc(2 * 8); store64(av5b, "t"); store64(av5b + 8, "-h");
+    assert(cmdit_parse_argv(h5b, 2, av5b) == CMDIT_OK, "-h no longer triggers help");
+    assert(cmdit_get_bool(h5b, fh5) == 1, "consumer -h bool matched (not shadowed)");
+    var h5b2 = cmdit_new("t"); cmdit_help_short(h5b2, 0);
+    var av5b2 = alloc(2 * 8); store64(av5b2, "t"); store64(av5b2 + 8, "--help");
+    assert(cmdit_parse_argv(h5b2, 2, av5b2) == CMDIT_HELP, "--help still fires with short disabled");
+    var h5c = cmdit_new("t"); cmdit_version_short(h5c, 118);                      # remap version to '-v'
+    var av5c = alloc(2 * 8); store64(av5c, "t"); store64(av5c + 8, "-v");
+    assert(cmdit_parse_argv(h5c, 2, av5c) == CMDIT_VERSION, "remapped -v -> CMDIT_VERSION");
 
     test_group("defaults: absent flag keeps its registered default");
     var h11 = cmdit_new("t");
@@ -314,6 +353,30 @@ fn main() {
     assert(cmdit_parse_argv(hne, 3, avne) == CMDIT_OK, "parse OK");
     assert(cmdit_get_enum(hne, fne) == 0 - 1, "non-enum flag -> get_enum -1");
 
+    test_group("getters: negative / out-of-range idx -> safe sentinel (no OOB read)");
+    var hg = cmdit_new("t");
+    var fg = cmdit_int(hg, 99, "count", 7, "");
+    assert(cmdit_get_int(hg, fg) == 7, "valid idx returns the registered default");
+    # an ignored -1 registration return must not become a 104-byte OOB read
+    assert(cmdit_get_int(hg, 0 - 1) == 0, "get_int(-1) -> 0 sentinel");
+    assert(cmdit_get_bool(hg, 0 - 1) == 0, "get_bool(-1) -> 0");
+    assert(cmdit_get_str(hg, 0 - 1) == 0, "get_str(-1) -> 0");
+    assert(cmdit_get_enum(hg, 0 - 1) == 0 - 1, "get_enum(-1) -> -1");
+    assert(cmdit_seen(hg, 0 - 1) == 0, "seen(-1) -> 0");
+    assert(cmdit_get_int(hg, 999) == 0, "get_int(past count) -> 0");
+    assert(cmdit_seen(hg, 999) == 0, "seen(past count) -> 0");
+
+    test_group("C3: metavar + shown defaults (cosmetic; parsing unaffected)");
+    var hmv = cmdit_new("tool");
+    var fout = cmdit_str(hmv, 111, "out", "out.txt", "output file");              # str flag w/ a default
+    assert(cmdit_metavar(hmv, fout, "FILE") == fout, "cmdit_metavar returns idx (chains)");
+    assert(cmdit_metavar(hmv, 0 - 1, "X") == 0 - 1, "cmdit_metavar(-1) -> -1 (bad idx guard)");
+    var fcnt = cmdit_int(hmv, 110, "num", 5, ""); cmdit_metavar(hmv, fcnt, "N");
+    var amv = alloc(3 * 8); store64(amv, "tool"); store64(amv + 8, "--out"); store64(amv + 16, "real.txt");
+    assert(cmdit_parse_argv(hmv, 3, amv) == CMDIT_OK, "parse with metavar'd flag OK");
+    assert(cstreq(cmdit_get_str(hmv, fout), "real.txt") == 1, "metavar is cosmetic: parsing unaffected");
+    assert(cmdit_help(hmv) == 0, "cmdit_help renders <FILE>/<N> metavars + (default: out.txt)");
+
     test_group("repeat: list capped at 64, last-wins tracks past the cap");
     var hpc = cmdit_new("t");
     var fpc = cmdit_repeat(hpc, 72, "header", "");
@@ -475,6 +538,21 @@ fn main() {
     assert(cmdit_require_positionals(hpp, 3) == CMDIT_RESULT_ERR, "min 3 not met -> err");
     assert(cmdit_error(hpp) == CMDIT_ERR_MISSING_POSITIONAL, "error = MISSING_POSITIONAL");
 
+    test_group("C1: require_positionals_max / _exact upper-bound + exact gates");
+    var hpm = cmdit_new("t");
+    var dpm = alloc(3 * 8); store64(dpm, "t"); store64(dpm + 8, "a"); store64(dpm + 16, "b");
+    assert(cmdit_parse_argv(hpm, 3, dpm) == CMDIT_OK, "parse OK (2 positionals)");
+    assert(cmdit_require_positionals_max(hpm, 2) == CMDIT_OK, "max 2 satisfied (== boundary)");
+    assert(cmdit_require_positionals_max(hpm, 3) == CMDIT_OK, "max 3 satisfied (under)");
+    assert(cmdit_require_positionals_max(hpm, 1) == CMDIT_RESULT_ERR, "max 1 exceeded -> err");
+    assert(cmdit_error(hpm) == CMDIT_ERR_TOO_MANY_POSITIONAL, "error = TOO_MANY_POSITIONAL");
+    assert(cmdit_print_error(hpm) == CMDIT_EXIT_USAGE, "print_error TOO_MANY -> EXIT_USAGE");
+    assert(cmdit_require_positionals_exact(hpm, 2) == CMDIT_OK, "exact 2 satisfied");
+    assert(cmdit_require_positionals_exact(hpm, 3) == CMDIT_RESULT_ERR, "exact 3 (too few) -> err");
+    assert(cmdit_error(hpm) == CMDIT_ERR_MISSING_POSITIONAL, "too few -> MISSING_POSITIONAL");
+    assert(cmdit_require_positionals_exact(hpm, 1) == CMDIT_RESULT_ERR, "exact 1 (too many) -> err");
+    assert(cmdit_error(hpm) == CMDIT_ERR_TOO_MANY_POSITIONAL, "too many -> TOO_MANY_POSITIONAL");
+
     test_group("verb: global required satisfied at finalize after dispatch");
     var hgr = cmdit_new("t");
     var gr = cmdit_str(hgr, 0, "config", 0, ""); cmdit_required(hgr, gr); cmdit_verb(hgr, "add", "");
@@ -482,6 +560,161 @@ fn main() {
     assert(cmdit_dispatch_argv(hgr, 2, dgr) == CMDIT_OK, "dispatch OK");
     assert(cmdit_finalize(hgr) == CMDIT_RESULT_ERR, "missing global required -> finalize err");
     assert(cmdit_error(hgr) == CMDIT_ERR_REQUIRED_MISSING, "error = REQUIRED_MISSING");
+
+    # --- audit-identified coverage gaps --------------------------------------
+
+    test_group("parse: negative int value (the sign branch of _cmdit_parse_int)");
+    var hni = cmdit_new("t");
+    var cni = cmdit_int(hni, 99, "count", 0, "");
+    var avni = alloc(2 * 8); store64(avni, "t"); store64(avni + 8, "--count=-5");
+    assert(cmdit_parse_argv(hni, 2, avni) == CMDIT_OK, "--count=-5 parse OK");
+    assert(cmdit_get_int(hni, cni) == 0 - 5, "negative int attached form -> -5");
+    var hni2 = cmdit_new("t");
+    var cni2 = cmdit_int(hni2, 99, "count", 0, "");
+    var avni2 = alloc(3 * 8); store64(avni2, "t"); store64(avni2 + 8, "--count"); store64(avni2 + 16, "-42");
+    assert(cmdit_parse_argv(hni2, 3, avni2) == CMDIT_OK, "--count -42 parse OK");
+    assert(cmdit_get_int(hni2, cni2) == 0 - 42, "negative int space form -> -42");
+
+    test_group("error: unknown SHORT flag -z -> UNKNOWN");
+    var huz = cmdit_new("t");
+    var avuz = alloc(2 * 8); store64(avuz, "t"); store64(avuz + 8, "-z");
+    assert(cmdit_parse_argv(huz, 2, avuz) == CMDIT_RESULT_ERR, "unknown short -> RESULT_ERR");
+    assert(cmdit_error(huz) == CMDIT_ERR_UNKNOWN, "error = UNKNOWN");
+
+    test_group("error: short value flag missing its value -> MISSING_VALUE + err_flag");
+    var hsm = cmdit_new("t");
+    var csm = cmdit_int(hsm, 99, "count", 1, "");
+    var avsm = alloc(2 * 8); store64(avsm, "t"); store64(avsm + 8, "-c");
+    assert(cmdit_parse_argv(hsm, 2, avsm) == CMDIT_RESULT_ERR, "short flag at end, no value -> err");
+    assert(cmdit_error(hsm) == CMDIT_ERR_MISSING_VALUE, "error = MISSING_VALUE");
+    assert(cmdit_err_flag(hsm) == csm, "err_flag names -c");
+
+    test_group("enum: a prefix of a valid choice is rejected (length-checked compare)");
+    var hpx = cmdit_new("t");
+    var fpx = cmdit_enum(hpx, 0, "color", "auto", "auto|always|never", "");
+    var avpx = alloc(2 * 8); store64(avpx, "t"); store64(avpx + 8, "--color=neve");   # prefix of "never"
+    assert(cmdit_parse_argv(hpx, 2, avpx) == CMDIT_RESULT_ERR, "prefix 'neve' rejected");
+    assert(cmdit_error(hpx) == CMDIT_ERR_BAD_ENUM, "error = BAD_ENUM (not a partial match)");
+
+    test_group("verb: unknown flag BEFORE the verb is a hard error (not deferred)");
+    var hub = cmdit_new("t");
+    cmdit_bool(hub, 0, "verbose", ""); cmdit_verb(hub, "add", "");
+    var dub = alloc(3 * 8); store64(dub, "t"); store64(dub + 8, "--bogus"); store64(dub + 16, "add");
+    assert(cmdit_dispatch_argv(hub, 3, dub) == CMDIT_RESULT_ERR, "pre-verb unknown -> RESULT_ERR");
+    assert(cmdit_error(hub) == CMDIT_ERR_UNKNOWN, "error = UNKNOWN (not UNKNOWN_VERB, not deferred)");
+
+    test_group("verb: global value flag missing its value during dispatch -> MISSING_VALUE");
+    var hgm = cmdit_new("t");
+    var gcfg = cmdit_str(hgm, 0, "config", 0, ""); cmdit_verb(hgm, "add", "");
+    var dgm = alloc(3 * 8); store64(dgm, "t"); store64(dgm + 8, "add"); store64(dgm + 16, "--config");
+    assert(cmdit_dispatch_argv(hgm, 3, dgm) == CMDIT_RESULT_ERR, "global flag missing value at end -> err");
+    assert(cmdit_error(hgm) == CMDIT_ERR_MISSING_VALUE, "error = MISSING_VALUE (dispatch copy)");
+    assert(cmdit_err_flag(hgm) == gcfg, "err_flag names --config");
+
+    test_group("verb: cmdit_verb_alias on a bad verb id -> -1");
+    var hba = cmdit_new("t");
+    assert(cmdit_verb_alias(hba, 0 - 1, "x") == 0 - 1, "alias of -1 -> -1");
+
+    test_group("parse: cmdit_new(0) adopts argv[0] as the prog name");
+    var hn0 = cmdit_new(0);
+    var an0 = alloc(2 * 8); store64(an0, "myprog"); store64(an0 + 8, "x");
+    assert(cmdit_parse_argv(hn0, 2, an0) == CMDIT_OK, "parse OK with null prog");
+    assert(cstreq(load64(hn0 + 48), "myprog") == 1, "prog_name adopted from argv[0]");
+
+    test_group("limit: registering past CMDIT_FLAGS_MAX returns -1 (no overrun)");
+    var hcap = cmdit_new("t");                          # already used 2 slots (help/version)
+    var k = 0;
+    var lastok = 0;
+    while (k < 62) { lastok = cmdit_bool(hcap, 0, 0, ""); k = k + 1; }
+    assert(lastok == 63, "64th registration (idx 63) succeeds");
+    assert(cmdit_bool(hcap, 0, 0, "") == 0 - 1, "65th registration -> -1 (cap enforced)");
+
+    test_group("limit: registering past CMDIT_VERB_MAX returns -1");
+    var hvc = cmdit_new("t");
+    var vk = 0;
+    var vlast = 0;
+    while (vk < 128) { vlast = cmdit_verb(hvc, "v", ""); vk = vk + 1; }
+    assert(vlast == 127, "128th verb (id 127) succeeds");
+    assert(cmdit_verb(hvc, "v", "") == 0 - 1, "129th verb -> -1 (cap enforced)");
+
+    # --- output renderers ----------------------------------------------------
+    # These assert the documented return code AND, more importantly, that the
+    # pointer-heavy render paths (raw entry/verb-row offsets, the sbuf[2] short
+    # buffer, the choice-set + Commands tails) execute without OOB. They emit to
+    # stdout/stderr by design — that output noise is expected during the run.
+
+    test_group("render: cmdit_help renders every flag kind + the verb tail");
+    var rh = cmdit_new("tool");
+    cmdit_bool(rh, 118, "verbose", "be verbose");                              # -v / --verbose
+    var rhn = cmdit_int(rh, 110, "num", 1, "a number"); cmdit_range(rh, rhn, 1, 10);   # -n / --num
+    cmdit_str(rh, 111, "out", 0, "output path");                               # -o / --out
+    cmdit_enum(rh, 0, "color", "auto", "auto|always|never", "when to colorize");
+    cmdit_repeat(rh, 72, "header", "repeatable header");                       # -H / --header
+    var rhq = cmdit_str(rh, 0, "handle", 0, "required handle"); cmdit_required(rh, rhq);
+    cmdit_verb(rh, "add", "add a thing");
+    var rhrm = cmdit_verb(rh, "remove", "remove a thing");
+    cmdit_verb_alias(rh, rhrm, "rm");
+    assert(cmdit_help(rh) == 0, "cmdit_help: short+long/<enum>/<int>/<str>/.../(required) + Commands");
+
+    test_group("render: cmdit_verbs_help lists real verbs, skips alias rows");
+    var rvh = cmdit_new("tool");
+    cmdit_verb(rvh, "add", "add a thing");
+    var rvrm = cmdit_verb(rvh, "remove", "remove a thing");
+    cmdit_verb_alias(rvh, rvrm, "rm");
+    assert(cmdit_verbs_help(rvh) == 0, "cmdit_verbs_help renders (alias 'rm' skipped)");
+
+    test_group("render: cmdit_version line + null prog/version branches");
+    var rver = cmdit_new("tool");
+    assert(cmdit_version(rver, "tool 1.0") == CMDIT_EXIT_OK, "cmdit_version -> EXIT_OK");
+    var rver0 = cmdit_new(0);                                                  # prog_name = 0
+    assert(cmdit_version(rver0, 0) == CMDIT_EXIT_OK, "cmdit_version(null prog, null ver) -> EXIT_OK");
+
+    test_group("render: cmdit_print_error -> EXIT_USAGE for every error code");
+    var pe1 = cmdit_new("prog");                                              # UNKNOWN (generic, no flag)
+    var pav1 = alloc(2 * 8); store64(pav1, "prog"); store64(pav1 + 8, "--nope");
+    cmdit_parse_argv(pe1, 2, pav1);
+    assert(cmdit_print_error(pe1) == CMDIT_EXIT_USAGE, "UNKNOWN -> EXIT_USAGE");
+    var pe2 = cmdit_new("prog");                                              # MISSING_VALUE (names --long)
+    cmdit_str(pe2, 0, "name", 0, "");
+    var pav2 = alloc(2 * 8); store64(pav2, "prog"); store64(pav2 + 8, "--name");
+    cmdit_parse_argv(pe2, 2, pav2);
+    assert(cmdit_print_error(pe2) == CMDIT_EXIT_USAGE, "MISSING_VALUE -> EXIT_USAGE");
+    var pe3 = cmdit_new("prog");                                              # BAD_INT via SHORT-only flag (sbuf path)
+    cmdit_int(pe3, 99, 0, 1, "");
+    var pav3 = alloc(3 * 8); store64(pav3, "prog"); store64(pav3 + 8, "-c"); store64(pav3 + 16, "abc");
+    cmdit_parse_argv(pe3, 3, pav3);
+    assert(cmdit_print_error(pe3) == CMDIT_EXIT_USAGE, "BAD_INT (short flag named via sbuf) -> EXIT_USAGE");
+    var pe4 = cmdit_new("prog");                                              # BUNDLED (generic)
+    var pav4 = alloc(2 * 8); store64(pav4, "prog"); store64(pav4 + 8, "-xy");
+    cmdit_parse_argv(pe4, 2, pav4);
+    assert(cmdit_print_error(pe4) == CMDIT_EXIT_USAGE, "BUNDLED -> EXIT_USAGE");
+    var pe5 = cmdit_new("prog");                                              # BAD_ENUM (+ choice set tail)
+    cmdit_enum(pe5, 0, "color", "auto", "auto|always|never", "");
+    var pav5 = alloc(3 * 8); store64(pav5, "prog"); store64(pav5 + 8, "--color"); store64(pav5 + 16, "purple");
+    cmdit_parse_argv(pe5, 3, pav5);
+    assert(cmdit_print_error(pe5) == CMDIT_EXIT_USAGE, "BAD_ENUM (+expected set) -> EXIT_USAGE");
+    var pe6 = cmdit_new("prog");                                              # OUT_OF_RANGE
+    var pe6f = cmdit_int(pe6, 0, "width", 80, ""); cmdit_range(pe6, pe6f, 1, 10);
+    var pav6 = alloc(3 * 8); store64(pav6, "prog"); store64(pav6 + 8, "--width"); store64(pav6 + 16, "99");
+    cmdit_parse_argv(pe6, 3, pav6);
+    assert(cmdit_print_error(pe6) == CMDIT_EXIT_USAGE, "OUT_OF_RANGE -> EXIT_USAGE");
+    var pe7 = cmdit_new("prog");                                              # REQUIRED_MISSING (via finalize)
+    var pe7f = cmdit_str(pe7, 0, "handle", 0, ""); cmdit_required(pe7, pe7f);
+    var pav7 = alloc(1 * 8); store64(pav7, "prog");
+    cmdit_parse_argv(pe7, 1, pav7); cmdit_finalize(pe7);
+    assert(cmdit_print_error(pe7) == CMDIT_EXIT_USAGE, "REQUIRED_MISSING -> EXIT_USAGE");
+    var pe8 = cmdit_new("prog");                                              # UNKNOWN_VERB (+ token + Commands tail)
+    cmdit_verb(pe8, "add", "add a thing");
+    var pav8 = alloc(2 * 8); store64(pav8, "prog"); store64(pav8 + 8, "bogus");
+    cmdit_dispatch_argv(pe8, 2, pav8);
+    assert(cmdit_print_error(pe8) == CMDIT_EXIT_USAGE, "UNKNOWN_VERB (+command list) -> EXIT_USAGE");
+    var pe9 = cmdit_new("prog");                                              # MISSING_POSITIONAL
+    var pav9 = alloc(1 * 8); store64(pav9, "prog");
+    cmdit_parse_argv(pe9, 1, pav9); cmdit_require_positionals(pe9, 2);
+    assert(cmdit_print_error(pe9) == CMDIT_EXIT_USAGE, "MISSING_POSITIONAL -> EXIT_USAGE");
+    var pe10 = cmdit_new("prog");                                             # else: unrecognized code (defensive)
+    store64(pe10 + 56, 99);                                                   # force a bogus last_error -> "argument error"
+    assert(cmdit_print_error(pe10) == CMDIT_EXIT_USAGE, "unrecognized code -> argument error -> EXIT_USAGE");
 
     return assert_summary();
 }

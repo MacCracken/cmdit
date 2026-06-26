@@ -6,14 +6,17 @@
 
 ## v1.0 criteria
 
-The bar for tagging cmdit v1.0 (freeze the public API). Filled in as the 0.1 → 0.3 arc lands:
+The bar for tagging cmdit v1.0 (freeze the public API). **All met in the 1.0.0 cut
+(M4, 2026-06-25):**
 
-- [ ] Public API frozen — every exported symbol documented and tested (0.3.0 verbs landed; the surface is now feature-complete — freeze pass pending)
-- [x] Test coverage adequate for the surface area — **157/157** over the pure parser + modifier + verb-dispatch cores (extended per milestone)
-- [ ] Benchmarks captured in `docs/benchmarks.md`
+- [x] Public API frozen — every exported symbol documented (README "API reference")
+  and tested; the public/internal boundary is delimited in [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md)
+- [x] Test coverage adequate for the surface area — **230/230**, incl. the full
+  output/renderer surface (was 157; +73 over renderers, parse/dispatch gaps, and C5/C3/C1)
+- [x] Benchmarks captured in [`../benchmarks.md`](../benchmarks.md)
 - [x] At least one downstream consumer green — **kii 1.1.0** (the re-fold; 468/468 tests, render verified)
-- [ ] CHANGELOG complete from v0.1.0 onward
-- [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`)
+- [x] CHANGELOG complete from v0.1.0 onward (all sections dated 2026-06-25)
+- [x] Security audit pass — [`../audit/2026-06-25-audit.md`](../audit/2026-06-25-audit.md)
 
 ## Milestones
 
@@ -63,6 +66,22 @@ See [`../adr/0002-verb-dispatch.md`](../adr/0002-verb-dispatch.md).
 **The roadmap bent on "nested sub-verbs":** shipped as re-entry on the remainder
 slice (a child handle re-dispatches), not an in-core verb tree — every production
 tool is depth ≤ 2 and the re-entry model is unbounded with zero extra API.
+
+### M4 — completeness delta + freeze (v1.0.0) — ✅ shipped 2026-06-25
+
+The final surface a 23-repo re-survey of hand-rolled CLI code found still uncovered,
+plus the v1.0 hardening + freeze. Append-only (entry 104→112 B; error codes grow to
+`TOO_MANY_POSITIONAL = 10`; the pure cores untouched):
+- `cmdit_help_short` / `cmdit_version_short` — remap/disable the auto `-h`/`-V` short
+  letters (unblocks the `df -h`/`ls -h` human-readable convention).
+- `cmdit_metavar` + shown string defaults in generated help.
+- `cmdit_require_positionals_max` / `_exact` — the upper-bound / both-bounds mirrors.
+- Two audit fixes (int-overflow range-bypass, unguarded getter idx); the full
+  renderer surface tested; **230/230**; benchmarks + security-audit doc; API frozen.
+
+See [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md). The v2 backlog (mutex/
+required-if sugar, optional-value flags, bundled shorts, `--no-foo`, named-positional
+help, config cascades) is confirmed-deferred by the re-survey, not dropped.
 
 ## Adoption (post-0.1.0)
 

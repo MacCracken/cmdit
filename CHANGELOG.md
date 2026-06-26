@@ -4,7 +4,66 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.3.0] - Unreleased
+## [1.0.0] - 2026-06-25
+
+**The v1.0 freeze.** The public API is frozen. This cut lands the final completeness
+delta a 23-repo re-survey of hand-rolled CLI code found still uncovered, fixes the two
+low-severity correctness issues an adversarial security audit confirmed, and meets the
+remaining v1.0 gates (benchmarks, security-audit doc, CHANGELOG, doc-drift). Append-only:
+`CMDIT_BOOL/INT/STR` = {0,1,2}, every prior entry/ctx offset, and the 0..9 error codes
+are untouched; the entry struct grows 104→112 B for the metavar.
+
+### Added
+- **`cmdit_help_short(h, ch)` / `cmdit_version_short(h, ch)`** — remap (any ASCII byte)
+  or disable (`ch = 0`) the auto `-h` / `-V` short letters, keeping the `--help`/
+  `--version` long forms + detection. Frees `-h` for a consumer's own flag (the
+  `df -h`/`ls -h` human-readable convention). No struct/error growth.
+- **`cmdit_metavar(h, idx, name)`** — override a value flag's generated-help placeholder
+  (`--out <FILE>` vs `<str>`); cosmetic, parsing-neutral, no-op on bool flags. The
+  generated help now also renders the registered default of string flags (`(default: …)`;
+  cstr only — int defaults stay unrendered, preserving the no-`fmt` renderer contract).
+- **`cmdit_require_positionals_max(h, max)` / `cmdit_require_positionals_exact(h, n)`** —
+  the upper-bound and both-bounds mirrors of `cmdit_require_positionals`. New error
+  **`CMDIT_ERR_TOO_MANY_POSITIONAL = 10`** (`too many arguments`, exit 2); reuses the
+  positional count (no struct growth).
+
+### Fixed
+- **`_cmdit_parse_int` integer overflow** (audit SEC-1) — a long all-digit argv/env token
+  silently wrapped mod 2⁶⁴ and could **bypass a `cmdit_range` bound** (`18446744073709551617`
+  → wraps to 1 → passed 1..4096). Now rejected before the multiply (`> (INT64_MAX − d)/10`)
+  → `CMDIT_ERR_BAD_INT`; the largest valid i64 still parses. The shared env-int path
+  inherits the rejection.
+- **Unguarded getter index** (audit SEC-2) — `cmdit_get_bool/int/str/enum` and `cmdit_seen`
+  did not bounds-check `idx`, so an ignored `-1` registration return + `cmdit_get_int(h, -1)`
+  was a 112-byte OOB read. A shared `_cmdit_idx_ok` guard now returns the type's zero
+  sentinel (mirroring `cmdit_positional` / `cmdit_repeat_get`).
+
+### Changed
+- Entry struct 104 → 112 B (metavar at +104; append-only, old offsets untouched).
+
+### Hardening (the freeze gates)
+- **Tests 157 → 230.** New coverage for the entire output/renderer surface
+  (`cmdit_print_error` every `CmditErr` branch, `cmdit_help`, `cmdit_verbs_help`,
+  `cmdit_version`), negative-int parse, dispatch pre-verb-unknown + dispatch
+  missing-value, enum prefix rejection, `CMDIT_FLAGS_MAX`/`CMDIT_VERB_MAX` cap returns,
+  getter idx guards, the overflow fix, and the C5/C3/C1 additions.
+- **Benchmarks** captured in [`docs/benchmarks.md`](docs/benchmarks.md) (harness
+  `tests/cmdit.bcyr`): handle construction ~13.8 µs (dominated by the entry memzero),
+  parse loop sub-µs, single-pass dispatch verified (after-verb ≈ before-verb, not 2×).
+- **Security audit** pass in [`docs/audit/2026-06-25-audit.md`](docs/audit/2026-06-25-audit.md):
+  no attacker-reachable memory-safety defect on any argv/env path; SEC-1/SEC-2 fixed.
+- **Doc drift fixed** — README test count (26→230), the `src/cmdit.cyr` ctx-size header
+  comment (104→160 B), `getting-started.md` (`src/main.cyr`→`src/cmdit.cyr`), demo version
+  strings (smoke 0.2.0→1.0.0), and this CHANGELOG's dates + the 0.3.0 `88→157` baseline.
+
+### Scope (deferred to a future release — confirmed by the re-survey, not dropped)
+- Cross-flag mutex / required-if sugar, duplicate-flag rejection, optional-value
+  (getopt `optional_argument`) tri-state, stop-at-first-positional, `--no-foo` negation,
+  bundled shorts `-abc`, attached short value `-xvalue`, named-positional help synopsis,
+  multi-source env/config cascades. Each resolved to caller-side / already-expressible /
+  low-prevalence; none threatens correctness or the frozen surface.
+
+## [0.3.0] - 2026-06-25
 
 **Verb / subcommand dispatch (M3).** Identify-and-return dispatch (mirroring
 `cmdit_get_enum`, not handler fn-ptrs — consumer handler signatures are
@@ -43,7 +102,7 @@ grows. The pure `cmdit_parse_argv` core is untouched.
 - **Error taxonomy** — `CMDIT_ERR_UNKNOWN_VERB=8` (`<prog>: unknown command: <x>`
   + command list) / `CMDIT_ERR_MISSING_POSITIONAL=9` (`missing required argument`),
   both exit 2.
-- **Tests** — `tests/cmdit.tcyr` grown 107 → **157 assertions** over verb
+- **Tests** — `tests/cmdit.tcyr` grown 88 → **157 assertions** over verb
   match/alias/unknown, global-before/after, deferral, `--` handling, remainder
   re-parse, nested re-entry, `require_positionals`, and `cmdit_basename`. Demo:
   `programs/verbs.cyr`.
@@ -58,7 +117,7 @@ grows. The pure `cmdit_parse_argv` core is untouched.
 - Handler invocation / signatures — cmdit returns an id + slice, never calls a handler.
 - Interactive REPL / slash-command DSLs (agora/agnoshi/thoth).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-06-25
 
 **Flag modifiers (M2).** Five append-only parse-loop primitives that subsume the
 patterns the 2026-06-25 ecosystem survey found hand-rolled across the consumer
@@ -125,7 +184,7 @@ taxonomy grows — both append-only, old offsets/codes untouched.
   builders, `USER>euid`, `ARK_CONFIG`'s privilege gate).
 - Positional-count/`required`-positional validation — candidate for 0.3.0.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-06-25
 
 **The extraction cut.** cmdit is the stdlib flag parser (`lib/flags.cyr`)
 productized as a standalone distlib + the universal boilerplate every structured
