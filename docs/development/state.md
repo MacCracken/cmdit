@@ -5,6 +5,13 @@
 
 ## Version
 
+**1.1.0** — built 2026-06-25. Append-only, non-breaking on the frozen 1.0.0 surface:
+adds **`cmdit_help_flags(h)`**, the table-only flag renderer (just the `  -x, --long
+<type>` rows, no Usage/Options wrapper) for tools that frame their own help (intro +
+custom usage + examples) around a generated flag list. `cmdit_help` composes it; its
+output is unchanged. Surfaced by the anuenue adoption pilot (the second rich-help
+consumer after the re-survey under-counted the need). **231 tests**; `dist` regenerated.
+
 **1.0.0** — Public API frozen (built 2026-06-25). M4 completeness delta + the v1.0
 freeze, grounded by a 23-repo re-survey of hand-rolled CLI code (confirmed the surface
 complete) and an adversarial security/readiness audit. Added: `cmdit_help_short` /

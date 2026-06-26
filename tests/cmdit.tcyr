@@ -655,6 +655,7 @@ fn main() {
     var rhrm = cmdit_verb(rh, "remove", "remove a thing");
     cmdit_verb_alias(rh, rhrm, "rm");
     assert(cmdit_help(rh) == 0, "cmdit_help: short+long/<enum>/<int>/<str>/.../(required) + Commands");
+    assert(cmdit_help_flags(rh) == 0, "cmdit_help_flags: just the flag rows (no Usage/Options/Commands wrapper)");
 
     test_group("render: cmdit_verbs_help lists real verbs, skips alias rows");
     var rvh = cmdit_new("tool");

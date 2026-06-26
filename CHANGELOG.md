@@ -4,6 +4,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-25
+
+**Rich-help support (`cmdit_help_flags`).** Append-only and non-breaking on the
+frozen 1.0.0 surface — a new function only. Surfaced by the anuenue adoption pilot:
+tools that frame their own help (a brand intro + custom usage synopsis + an Examples
+block) need to wrap a *generated* flag list, which the monolithic `cmdit_help`
+couldn't provide. The re-survey under-counted this (deemed it beneficiary≈1); the
+pilot is the second concrete consumer, so it graduates from caller-side to a tiny
+library primitive.
+
+### Added
+- **`cmdit_help_flags(h)`** — the table-only flag renderer: prints just the
+  `  -x, --long <type>\thelp` rows (no `Usage:`/`Options:` header, no verb list), so a
+  consumer can sandwich the generated rows inside its own help prose. `cmdit_help`
+  now composes it; `cmdit_help`'s output is byte-for-byte unchanged from 1.0.0.
+
 ## [1.0.0] - 2026-06-25
 
 **The v1.0 freeze.** The public API is frozen. This cut lands the final completeness

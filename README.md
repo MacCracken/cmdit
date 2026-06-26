@@ -5,7 +5,8 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.0.0 — public API frozen. **License:** GPL-3.0-only. Distributed as
+**Status:** v1.1.0 — public API frozen at 1.0.0; 1.1.0 adds the table-only help
+renderer (`cmdit_help_flags`, append-only). **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
 ## Why
@@ -126,7 +127,8 @@ constants, not API (do not depend on their values).
   `cmdit_verb_argv`, `cmdit_raw_argv` / `cmdit_raw_argc`, `cmdit_basename`.
 - **Validate / errors:** `cmdit_require_positionals` / `_max` / `_exact`,
   `cmdit_error` (last `CmditErr`), `cmdit_err_flag` (offending flag index).
-- **Output:** `cmdit_help` / `cmdit_verbs_help`, `cmdit_version`, `cmdit_print_error`.
+- **Output:** `cmdit_help` (Usage + flag list) / `cmdit_help_flags` (table-only rows,
+  for tools framing their own help) / `cmdit_verbs_help`, `cmdit_version`, `cmdit_print_error`.
 - **Result codes:** `CMDIT_OK` / `CMDIT_HELP` / `CMDIT_VERSION` / `CMDIT_RESULT_ERR`.
   **Exit codes:** `CMDIT_EXIT_OK` (0) / `CMDIT_EXIT_RUN` (1) / `CMDIT_EXIT_USAGE` (2).
   Note the two namespaces collide by value on purpose (`CMDIT_OK` = `CMDIT_EXIT_OK`
