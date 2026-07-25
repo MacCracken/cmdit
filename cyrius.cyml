@@ -4,7 +4,7 @@ version = "${file:VERSION}"
 description = "cmdit — sovereign CLI / argument-parsing library (getopt-long), productized + extended from the stdlib flags parser"
 license = "GPL-3.0-only"
 language = "cyrius"
-cyrius = "6.2.44"
+cyrius = "6.4.78"
 
 [build]
 entry = "programs/smoke.cyr"

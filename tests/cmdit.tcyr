@@ -717,6 +717,42 @@ fn main() {
     store64(pe10 + 56, 99);                                                   # force a bogus last_error -> "argument error"
     assert(cmdit_print_error(pe10) == CMDIT_EXIT_USAGE, "unrecognized code -> argument error -> EXIT_USAGE");
 
+    # ══ 1.2.0: verb introspection + completions ══════════
+    test_group("verb_introspection");
+    var vi = cmdit_new("demo");
+    assert(cmdit_verb_count(vi) == 0, "no verbs registered -> count 0");
+    assert(cmdit_verb_name_at(vi, 0) == 0, "name_at on an empty table -> 0");
+    var v_run = cmdit_verb(vi, "run", "Run a thing");
+    var v_ls = cmdit_verb(vi, "ls", "List things");
+    cmdit_verb_alias(vi, v_run, "r");
+    assert(cmdit_verb_count(vi) == 3, "two verbs + one alias -> 3 rows");
+    assert(cstreq(cmdit_verb_name_at(vi, 0), "run") == 1, "row 0 name");
+    assert(cstreq(cmdit_verb_name_at(vi, 1), "ls") == 1, "row 1 name");
+    assert(cstreq(cmdit_verb_name_at(vi, 2), "r") == 1, "row 2 is the alias");
+    assert(cmdit_verb_is_alias(vi, 0) == 0, "row 0 is canonical");
+    assert(cmdit_verb_is_alias(vi, 2) == 1, "row 2 is an alias");
+    assert(cmdit_verb_canonical_at(vi, 2) == v_run, "alias resolves to its verb");
+    assert(cstreq(cmdit_verb_help_at(vi, 0), "Run a thing") == 1, "canonical help");
+    # An alias row stores no help of its own; it must borrow the canonical's,
+    # or a caller listing aliases would show a blank description.
+    assert(cstreq(cmdit_verb_help_at(vi, 2), "Run a thing") == 1, "alias borrows canonical help");
+    # Out-of-range is 0 / -1, never a wild read.
+    assert(cmdit_verb_name_at(vi, 99) == 0, "name_at out of range -> 0");
+    assert(cmdit_verb_name_at(vi, 0 - 1) == 0, "name_at negative -> 0");
+    assert(cmdit_verb_is_alias(vi, 99) == 0, "is_alias out of range -> 0");
+    assert(cmdit_verb_canonical_at(vi, 99) == 0 - 1, "canonical_at out of range -> -1");
+    assert(cmdit_verb_count(0) == 0, "null handle -> 0");
+
+    test_group("completions");
+    # Only the shell selection and the failure contract are asserted here — the
+    # script bodies go to stdout, which this harness does not capture. The
+    # generated text is covered by the fuzz/program probes.
+    var ch = cmdit_new("demo");
+    cmdit_verb(ch, "run", "Run a thing");
+    assert(cmdit_completions(ch, "elvish") == 0 - 1, "unknown shell -> -1");
+    assert(cmdit_completions(ch, 0) == 0 - 1, "null shell -> -1");
+    assert(cmdit_completions(0, "bash") == 0 - 1, "null handle -> -1");
+
     return assert_summary();
 }
 

@@ -4,6 +4,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-25
+
+**Verb introspection + shell completions.** Append-only and non-breaking on the frozen 1.0.0
+surface — new functions only.
+
+The verb table already drove `cmdit_verbs_help`, but nothing exposed it, so a consumer could not
+generate shell completions from the very verbs it had just registered: it had to keep a second,
+hand-maintained list, which drifts the moment a verb is added. Surfaced by the stiva adoption
+(35 verbs, a `completions` subcommand among them).
+
+- `cmdit_verb_count(h)` — total rows, aliases included.
+- `cmdit_verb_name_at(h, i)` / `cmdit_verb_help_at(h, i)` — name and help. An alias row stores no
+  help of its own, so `help_at` returns the **canonical** verb's, or a caller listing aliases
+  would render a blank description.
+- `cmdit_verb_is_alias(h, i)` / `cmdit_verb_canonical_at(h, i)` — the same
+  `canonical_id == own index` test `cmdit_verbs_help` uses to skip alias rows.
+  Out-of-range and null-handle inputs return 0 / -1, never a wild read.
+- `cmdit_completions(h, shell)` — writes a bash, zsh, or fish completion script for `h`'s
+  registered verbs and long flags. Returns -1 for an unrecognised shell **without printing
+  anything**, so a caller can report the error without a half-written script on stdout.
+
+Two details that matter for generated shell:
+
+- Output goes to **stdout**, not stderr — the script is meant to be redirected into a completions
+  file or eval'd.
+- Help text is caller-supplied prose, so every value interpolated into a single-quoted shell
+  string has its apostrophes escaped (`'` → `'\''`). An unescaped one would close the quote and
+  inject the remainder into the script. Function names derived from the program name are
+  sanitised to `[A-Za-z0-9_]` for the same class of reason.
+
+Verified by syntax-checking the generated output with the real parsers: `bash -n` and `zsh -n`
+both accept it, including a verb description containing an apostrophe. `programs/completions.cyr`
+is the runnable demo.
+
+Also: toolchain pin 6.2.44 → 6.4.78 (the suite is green on it; the old pin warned on every build).
+
 ## [1.1.0] - 2026-06-25
 
 **Rich-help support (`cmdit_help_flags`).** Append-only and non-breaking on the

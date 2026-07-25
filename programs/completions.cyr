@@ -1,0 +1,54 @@
+# cmdit completions demo — proves cmdit_completions emits a script a real shell
+# will source, for a CLI whose verbs and flags are registered the ordinary way.
+#
+# Build: cyrius build programs/completions.cyr build/cmdit-completions
+# Try:   ./build/cmdit-completions bash | bash -n -    # syntax-check it
+#        ./build/cmdit-completions zsh
+#        ./build/cmdit-completions fish
+#
+# The point of the exercise: the script is a projection of the parser's own verb
+# table, so it cannot drift from the CLI the way a hand-maintained list does.
+#
+# stdlib-only project, so the entry includes its stdlib explicitly (like smoke).
+include "lib/vec.cyr"
+include "lib/args.cyr"
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/io.cyr"
+include "src/cmdit.cyr"
+
+fn eputs(s): i64 { syscall(1, 2, s, strlen(s)); return 0; }
+
+fn main(): i64 {
+    # The CLI whose completions we generate. An apostrophe and a dash are in
+    # there deliberately — both have bitten generated shell before.
+    var app = cmdit_new("demo-app");
+    cmdit_bool(app, 118, "verbose", "be verbose");
+    cmdit_str(app, 114, "root", "/var/lib/demo", "storage root");
+    var v_run = cmdit_verb(app, "run", "Run it (it's one-shot)");
+    cmdit_verb(app, "ps", "List things");
+    var v_rm = cmdit_verb(app, "rm", "Remove a thing");
+    cmdit_verb_alias(app, v_rm, "remove");
+
+    # This program's own argv: one positional, the shell name.
+    var h = cmdit_new("cmdit-completions");
+    var r = cmdit_parse(h);
+    if (r == CMDIT_HELP)       { cmdit_help(h); return CMDIT_EXIT_OK; }
+    if (r == CMDIT_VERSION)    { return cmdit_version(h, "cmdit-completions 1.2.0"); }
+    if (r == CMDIT_RESULT_ERR) { cmdit_print_error(h); return CMDIT_EXIT_USAGE; }
+    if (cmdit_positional_count(h) < 1) {
+        eputs("usage: cmdit-completions <bash|zsh|fish>\n");
+        return CMDIT_EXIT_USAGE;
+    }
+    var shell = cmdit_positional(h, 0);
+    if (cmdit_completions(app, shell) < 0) {
+        eputs("unsupported shell: ");
+        eputs(shell);
+        eputs("\n");
+        return CMDIT_EXIT_USAGE;
+    }
+    return CMDIT_EXIT_OK;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
