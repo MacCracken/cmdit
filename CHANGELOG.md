@@ -4,6 +4,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-25
+
+**Completion-generator fixes, all found by adversarial review of the stiva adoption.** 1.2.0's
+generated scripts were valid shell but wrong in two ways that matter.
+
+- **The verb-position guard was wrong whenever a global flag preceded the verb.** bash used
+  `[[ $COMP_CWORD -eq 1 ]]` and zsh `(( CURRENT == 2 ))`, so `tool --root /x <TAB>` — the ordinary
+  invocation for any tool with a global value-flag — completed filenames instead of verbs.
+  Verified live against bash 5.3 with the real generated script. Both emitters now walk the words
+  before the cursor for the first non-flag token, skipping the argument of a value-taking flag,
+  using a new `valueflags` list derived from the entry table's types.
+- **The escaping claim in 1.2.0's changelog was false.** Verb names and long-flag names were
+  interpolated into `local verbs='…'` with **no** escaping, and the program name was emitted
+  outside any quoting. More importantly, escaping alone cannot fix this: `compgen -W "$verbs"`
+  re-expands each word, so a `$(…)` or a backtick in a name would execute at TAB time even inside
+  correct single quotes. Names are now **whitelist-filtered** to `[A-Za-z0-9_.-]` and dropped from
+  the completion if they fail — a missing completion is a papercut; a command substitution running
+  in the user's shell is not.
+
+No consumer was exposed: stiva's verb and flag names are all safe literals. This is a library
+contract defect, fixed before anything relied on the contract.
+
 ## [1.2.0] - 2026-07-25
 
 **Verb introspection + shell completions.** Append-only and non-breaking on the frozen 1.0.0
