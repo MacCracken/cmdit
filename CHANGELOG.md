@@ -4,6 +4,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-26
+
+**A verb could not forward a command line.** Both halves found by adversarial review of stiva's
+`exec`, which needs exactly this and could not ship without it.
+
+### Fixed — the `--` terminator was consumed by the dispatcher and never forwarded
+`cmdit_dispatch_argv` treated `--` as "stop parsing global flags" and `continue`d **without copying
+the token into the remainder slice**, so the verb's own `cmdit_parse_argv` — which handles `--`
+correctly — never saw one. The documented escape hatch for a command carrying flags therefore did
+nothing, and `prog verb -- cmd -x` failed **identically** to omitting it:
+
+```
+stiva exec c1 ls -l       -> "unknown flag", the command never runs
+stiva exec c1 -- ls -l    -> the same error
+```
+
+A `--` appearing BEFORE the verb is still consumed, because `remainder[0]` must be the verb name
+and the terminator has already done its job there.
+
+### Added — `cmdit_verb_trailing_after(h, verb_id, n)`
+Marks a verb as taking a **verbatim** trailing argument list after its first `n` positionals.
+Past that point nothing is treated as a flag, at either the dispatcher or the verb level, and the
+mark propagates from the top-level handle into `cmdit_parse_verb` so a consumer declares it once.
+
+This is a correctness fix, not a convenience. Without it a **global** flag appearing inside a
+forwarded command was applied to the host tool:
+
+```
+stiva exec c1 mycmd --root /x   -> silently retargeted STIVA's data root
+```
+
+No diagnostic, and the payload never saw the argument it was passed. `cmdit_verb_trailing_at`
+reports the mark (−1 when unset). Aliases inherit it through the canonical row.
+
+`CMDIT_CTX_SIZE` grows 160 → 168 for the new per-handle slot. Unmarked verbs are byte-for-byte
+unchanged. **250 → 267 assertions.**
+
 ## [1.2.1] - 2026-07-25
 
 **Completion-generator fixes, all found by adversarial review of the stiva adoption.** 1.2.0's

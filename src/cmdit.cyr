@@ -101,11 +101,11 @@ var CMDIT_EXIT_USAGE = 2;    # usage / parse error
 
 var CMDIT_FLAGS_MAX = 64;    # raised from flags.cyr's 32 — attn11 has ~35 flags
 var CMDIT_POS_MAX = 128;
-var CMDIT_CTX_SIZE = 160;    # 0.3.0: +104..+152 verb dispatch state (was 104)
+var CMDIT_CTX_SIZE = 168;    # 1.2.2: +160 trailing_verbatim (0.3.0 added +104..+152 verb dispatch state; was 104)
 var CMDIT_ENTRY_SIZE = 112;  # 1.0.0: grown 104 -> 112 (metavar at +104), append-only (old offsets unchanged)
 var CMDIT_REPEAT_MAX = 64;   # per cmdit_repeat flag occurrence cap (silently capped, like positionals)
 var CMDIT_VERB_MAX = 128;    # 0.3.0: verb table cap (sit has 25 verbs; aliases are extra rows)
-var CMDIT_VERB_SIZE = 32;    # 0.3.0: verb-row stride (+0 name +8 help +16 canonical_id +24 reserved)
+var CMDIT_VERB_SIZE = 32;    # 0.3.0: verb-row stride (+0 name +8 help +16 canonical_id +24 trailing_after)
 
 # Per-entry attribute bitfield (entry +48). Append-only; the byte-compatible
 # 0.1.0 type/offset layout (+0..+40) is untouched, so CMDIT_BOOL/INT/STR stay {0,1,2}.
@@ -283,6 +283,7 @@ fn cmdit_new(prog_name): i64 {
     store64(h + 136, 0);                                                         # verb_argv
     store64(h + 144, 0);                                                         # verb_argc
     store64(h + 152, 0);                                                         # err_verb
+    store64(h + 160, 0);                                                         # trailing_verbatim (1.2.2; 0 = off)
     store64(h + 80, cmdit_bool(h, 104, "help", "show this help and exit"));      # 'h'
     store64(h + 88, cmdit_bool(h, 86, "version", "print version and exit"));     # 'V'
     return h;
@@ -542,9 +543,16 @@ fn cmdit_parse_argv(h, argc, argv): i64 {
     if (load64(h + 48) == 0) { if (argc > 0) { store64(h + 48, load64(argv)); } }
     var i = 1;
     var in_positional = 0;
+    # 1.2.2: trailing-verbatim, propagated from the dispatcher by
+    # cmdit_parse_verb. -1 = off. Once this many positionals have been pushed,
+    # every remaining token is a positional whatever it looks like.
+    var trail = load64(h + 160);
     while (i < argc) {
         var tok = load64(argv + i * 8);
         if (tok == 0) { i = i + 1; continue; }
+        if (trail > 0) {
+            if (cmdit_positional_count(h) >= trail - 1) { in_positional = 1; }
+        }
         if (in_positional == 1) { _cmdit_push_positional(h, tok); i = i + 1; continue; }
         if (load8(tok) != 45) { _cmdit_push_positional(h, tok); i = i + 1; continue; }
         if (load8(tok + 1) == 0) { _cmdit_push_positional(h, tok); i = i + 1; continue; }
@@ -758,6 +766,46 @@ fn _cmdit_verb_add(h, name, help, canonical): i64 {
 # -1 if the verb table is full.
 fn cmdit_verb(h, name, help): i64 { return _cmdit_verb_add(h, name, help, 0 - 1); }
 
+# 1.2.2: mark a verb as taking a VERBATIM trailing argument list after its first
+# `n` positionals. Everything past that point is a positional, whatever it looks
+# like — no flag parsing, at either the dispatcher or the verb level.
+#
+# This exists because a container runtime's `exec`, and anything else that
+# forwards a command line to another program, cannot work without it:
+#
+#   stiva exec c1 ls -l          -> "unknown flag", the command never runs
+#   stiva exec c1 -- ls -l       -> the SAME error (see the fix below)
+#   stiva exec c1 mycmd --root /x -> silently retargets the CALLER's --root
+#
+# The last one is why this is a correctness fix and not a convenience: a global
+# flag appearing inside the forwarded command was being applied to the host tool,
+# changing where it wrote, with no diagnostic.
+#
+# `n` counts positionals AFTER the verb name. For `exec <container> <cmd>...`
+# that is 1: the container id is ours, everything after belongs to the payload.
+# Returns verb_id for chaining, or -1.
+fn cmdit_verb_trailing_after(h, verb_id, n): i64 {
+    if (verb_id < 0) { return 0 - 1; }
+    if (verb_id >= load64(h + 120)) { return 0 - 1; }
+    # +1 so the stored value is always non-zero for a marked verb, keeping 0 as
+    # "not marked" in a field that older callers left zeroed.
+    store64(_cmdit_verb_row(h, verb_id) + 24, n + 1);
+    return verb_id;
+}
+
+# Positionals-after-the-verb before trailing-verbatim kicks in, or -1 when the
+# verb is not marked.
+#[must_use]
+fn cmdit_verb_trailing_at(h, verb_id): i64 {
+    if (verb_id < 0) { return 0 - 1; }
+    if (h == 0) { return 0 - 1; }
+    if (load64(h + 104) == 0) { return 0 - 1; }
+    if (verb_id >= load64(h + 120)) { return 0 - 1; }
+    var v = load64(_cmdit_verb_row(h, verb_id) + 24);
+    if (v == 0) { return 0 - 1; }
+    return v - 1;
+}
+
 # Add an alias for an existing verb (an extra row resolving to verb_id). Returns
 # verb_id for chaining, or -1 on error.
 fn cmdit_verb_alias(h, verb_id, alias): i64 {
@@ -847,6 +895,8 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
     var rn = 0;
     var verb_found = 0;
     var no_more_flags = 0;
+    var trailing_at = 0 - 1;        # 1.2.2: positionals before verbatim, or -1
+    var post_positionals = 0;
     var i = 1;
     while (i < argc) {
         var tok = load64(argv + i * 8);
@@ -854,7 +904,19 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
         var is_flag = 0;
         if (no_more_flags == 0) { if (load8(tok) == 45) { if (load8(tok + 1) != 0) { is_flag = 1; } } }
         if (is_flag == 1 && load8(tok + 1) == 45 && load8(tok + 2) == 0) {
-            no_more_flags = 1; i = i + 1; continue;          # '--' terminator
+            no_more_flags = 1;
+            # 1.2.2 FIX: forward the terminator when it lands AFTER the verb.
+            # It used to be consumed here and never copied into `rem`, so the
+            # verb's own `cmdit_parse_argv` — which handles '--' perfectly well
+            # — never saw one. The documented escape hatch for a command with
+            # flags (`prog verb -- cmd -x`) therefore did nothing, and failed
+            # identically to omitting it.
+            #
+            # Before the verb it is still consumed: `rem[0]` must be the verb
+            # name, and a '--' there means "no more GLOBAL flags", which this
+            # loop has already applied by setting no_more_flags.
+            if (verb_found == 1) { store64(rem + rn * 8, tok); rn = rn + 1; }
+            i = i + 1; continue;
         }
         if (verb_found == 0) {
             if (is_flag == 1) {
@@ -866,9 +928,22 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
             if (vid < 0) { store64(h + 152, tok); store64(h + 56, CMDIT_ERR_UNKNOWN_VERB); return CMDIT_RESULT_ERR; }
             store64(h + 128, vid);
             store64(rem + rn * 8, tok); rn = rn + 1;          # remainder[0] = verb name
-            verb_found = 1; i = i + 1; continue;
+            verb_found = 1;
+            # Resolve through the alias to the canonical row, so an alias
+            # inherits the trailing behaviour of the verb it names.
+            trailing_at = cmdit_verb_trailing_at(h, load64(_cmdit_verb_row(h, vid) + 16));
+            i = i + 1; continue;
         }
         # after the verb
+        #
+        # 1.2.2: for a verb marked `cmdit_verb_trailing_after(n)`, stop treating
+        # anything as a flag once n positionals have been seen. Without this a
+        # GLOBAL flag appearing inside a forwarded command line is applied to the
+        # host tool — `exec c1 mycmd --root /x` silently retargeted the caller's
+        # data root, with no diagnostic and the payload none the wiser.
+        if (trailing_at >= 0) {
+            if (post_positionals >= trailing_at) { no_more_flags = 1; is_flag = 0; }
+        }
         if (is_flag == 1) {
             var ep = _cmdit_disp_find(h, tok);
             if (ep != 0) { if (_cmdit_is_auto(h, ep) == 0) {
@@ -878,6 +953,7 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
             } }
         }
         store64(rem + rn * 8, tok); rn = rn + 1;              # defer to the verb's scope
+        if (verb_found == 1) { post_positionals = post_positionals + 1; }
         i = i + 1;
     }
     store64(rem + rn * 8, 0);                                 # NULL-terminate the slice
@@ -903,6 +979,15 @@ fn cmdit_dispatch(h): i64 {
 # triple and is how nested sub-verbs dispatch (build vh with its own verbs, call
 # cmdit_dispatch_argv(vh, cmdit_verb_argc(h), cmdit_verb_argv(h)) instead).
 fn cmdit_parse_verb(vh, h): i64 {
+    # 1.2.2: carry the dispatcher's trailing-verbatim mark onto the verb handle,
+    # so the consumer declares it ONCE (on the top-level handle, where the verb
+    # is registered) rather than having to repeat it per verb handle — and so it
+    # cannot drift between the two parses.
+    var vid = load64(h + 128);
+    if (vid >= 0) {
+        var t = cmdit_verb_trailing_at(h, load64(_cmdit_verb_row(h, vid) + 16));
+        if (t >= 0) { store64(vh + 160, t + 1); }
+    }
     var r = cmdit_parse_argv(vh, load64(h + 144), load64(h + 136));
     if (r != CMDIT_OK) { return r; }
     return cmdit_finalize(vh);

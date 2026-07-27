@@ -430,6 +430,78 @@ fn main() {
     assert(cmdit_verb_argc(hv1) == 1, "remainder argc = 1");
     assert(cstreq(load64(cmdit_verb_argv(hv1)), "add") == 1, "remainder[0] = verb name");
 
+
+    # ══ 1.2.2: '--' forwarding + trailing-verbatim ══════════
+    #
+    # Both halves of "a verb cannot forward a command line". Before 1.2.2 the
+    # dispatcher swallowed the '--' terminator without copying it into the
+    # remainder, so the verb's own parse never saw one and the documented escape
+    # hatch failed IDENTICALLY to omitting it. Separately, a global flag inside
+    # the forwarded command was applied to the host tool.
+
+    test_group("verb: '--' after the verb reaches the remainder");
+    var tr_h1 = cmdit_new("t");
+    cmdit_verb(tr_h1, "exec", "");
+    var tr_a1 = alloc(6 * 8);
+    store64(tr_a1, "t"); store64(tr_a1 + 8, "exec"); store64(tr_a1 + 16, "c1");
+    store64(tr_a1 + 24, "--"); store64(tr_a1 + 32, "ls"); store64(tr_a1 + 40, "-l");
+    assert(cmdit_dispatch_argv(tr_h1, 6, tr_a1) == CMDIT_OK, "dispatch OK");
+    assert(cmdit_verb_argc(tr_h1) == 5, "remainder keeps the '--' (was 4)");
+    assert(cstreq(load64(cmdit_verb_argv(tr_h1) + 16), "--") == 1, "at index 2, after [exec][c1]");
+
+    test_group("verb: '--' BEFORE the verb is still consumed");
+    var tr_h2 = cmdit_new("t");
+    cmdit_verb(tr_h2, "exec", "");
+    var tr_a2 = alloc(4 * 8);
+    store64(tr_a2, "t"); store64(tr_a2 + 8, "--"); store64(tr_a2 + 16, "exec"); store64(tr_a2 + 24, "c1");
+    assert(cmdit_dispatch_argv(tr_h2, 4, tr_a2) == CMDIT_OK, "dispatch OK");
+    assert(cstreq(load64(cmdit_verb_argv(tr_h2)), "exec") == 1, "remainder[0] is still the verb");
+
+    test_group("verb: trailing-verbatim keeps a global flag out of the payload");
+    var tr_h3 = cmdit_new("t");
+    var tr_root = cmdit_str(tr_h3, 0, "root", "/default", "data root");
+    var tr_v3 = cmdit_verb(tr_h3, "exec", "");
+    cmdit_verb_trailing_after(tr_h3, tr_v3, 1);
+    var tr_a3 = alloc(6 * 8);
+    store64(tr_a3, "t"); store64(tr_a3 + 8, "exec"); store64(tr_a3 + 16, "c1");
+    store64(tr_a3 + 24, "mycmd"); store64(tr_a3 + 32, "--root"); store64(tr_a3 + 40, "/x");
+    assert(cmdit_dispatch_argv(tr_h3, 6, tr_a3) == CMDIT_OK, "dispatch OK");
+    assert(cstreq(cmdit_get_str(tr_h3, tr_root), "/default") == 1, "--root NOT stolen by the host tool");
+    assert(cmdit_verb_argc(tr_h3) == 5, "the whole payload reached the remainder");
+
+    test_group("verb: trailing-verbatim survives into the verb's own parse");
+    var tr_h4 = cmdit_new("t");
+    var tr_v4 = cmdit_verb(tr_h4, "exec", "");
+    cmdit_verb_trailing_after(tr_h4, tr_v4, 1);
+    var tr_a4 = alloc(6 * 8);
+    store64(tr_a4, "t"); store64(tr_a4 + 8, "exec"); store64(tr_a4 + 16, "c1");
+    store64(tr_a4 + 24, "ls"); store64(tr_a4 + 32, "-l"); store64(tr_a4 + 40, "-a");
+    assert(cmdit_dispatch_argv(tr_h4, 6, tr_a4) == CMDIT_OK, "dispatch OK");
+    var tr_vh4 = cmdit_new("t exec");
+    cmdit_str(tr_vh4, 119, "workdir", 0, "");
+    assert(cmdit_parse_verb(tr_vh4, tr_h4) == CMDIT_OK, "verb parse OK — '-l' is not an unknown flag");
+    assert(cmdit_positional_count(tr_vh4) == 4, "c1 ls -l -a are all positionals");
+    assert(cstreq(cmdit_positional(tr_vh4, 2), "-l") == 1, "the flag reached the payload verbatim");
+
+    test_group("verb: trailing-verbatim does not eat the verb's OWN flags");
+    var tr_h5 = cmdit_new("t");
+    var tr_v5 = cmdit_verb(tr_h5, "exec", "");
+    cmdit_verb_trailing_after(tr_h5, tr_v5, 1);
+    var tr_a5 = alloc(6 * 8);
+    store64(tr_a5, "t"); store64(tr_a5 + 8, "exec"); store64(tr_a5 + 16, "-w");
+    store64(tr_a5 + 24, "/app"); store64(tr_a5 + 32, "c1"); store64(tr_a5 + 40, "ls");
+    assert(cmdit_dispatch_argv(tr_h5, 6, tr_a5) == CMDIT_OK, "dispatch OK");
+    var tr_vh5 = cmdit_new("t exec");
+    var tr_wd5 = cmdit_str(tr_vh5, 119, "workdir", 0, "");
+    assert(cmdit_parse_verb(tr_vh5, tr_h5) == CMDIT_OK, "verb parse OK");
+    assert(cstreq(cmdit_get_str(tr_vh5, tr_wd5), "/app") == 1, "-w before the positional IS the verb's");
+    assert(cmdit_positional_count(tr_vh5) == 2, "c1 and ls are the positionals");
+
+    test_group("verb: an unmarked verb is unchanged");
+    var tr_h6 = cmdit_new("t");
+    cmdit_verb(tr_h6, "plain", "");
+    assert(cmdit_verb_trailing_at(tr_h6, 0) == 0 - 1, "unmarked -> -1");
+
     test_group("verb: alias resolves to canonical id");
     var vb2 = cmdit_new("t");
     var v_inst = cmdit_verb(vb2, "install", "");
