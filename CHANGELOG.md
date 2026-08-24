@@ -4,6 +4,82 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-08-23
+
+**Maintenance: toolchain pin 6.4.78 → 6.5.35 and a full vendored-stdlib refresh.** No change to
+`src/cmdit.cyr` — the public surface is byte-for-byte the frozen 1.0.0 API plus the 1.1–1.2
+append-only additions.
+
+Both halves were overdue and each warned on every single build:
+
+```
+warning: cyrius.cyml pins 6.4.78 but cycc is 6.5.35 — toolchain drift
+warning: ./lib/ shadows version-pinned .../6.4.78/lib — 12 bundled lib(s) differ
+```
+
+- **Pin 6.4.78 → 6.5.35.** CI derives the toolchain from `cyrius.cyml [package].cyrius`, so no
+  workflow edit was needed.
+- **`cyrius lib sync --full`** re-vendored `lib/` from the new pin: 108 files, now byte-identical
+  to `6.5.35/lib`. 70 modified, 3 new top-level modules (`async_macos`, `async_win`,
+  `thread_macos`) and the new `lib/unicode/` subtree; nothing removed. The 12 stale bundled libs
+  the shadow warning named (bayan, ganita, sakshi, niyama, sigil, sandhi, yukti, patra, vani,
+  mabda, sankoch, yantra) are current.
+
+### The upgrade is codegen-neutral for cmdit, and that was measured rather than assumed
+
+⭐ **Both halves were A/B'd separately, and both are byte-neutral.** Holding one variable fixed
+and swapping the other, every artifact — `programs/smoke.cyr`, `programs/verbs.cyr`,
+`programs/completions.cyr`, `tests/cmdit.tcyr`, `tests/cmdit.bcyr` — comes out **byte-identical
+on sha256**:
+
+| A/B | held fixed | swapped | result |
+|---|---|---|---|
+| compiler | 6.5.35 `lib/` | cycc 6.4.78 ↔ 6.5.35 | 5/5 byte-identical |
+| vendored lib | cycc 6.5.35 | `lib/` 6.4.78 ↔ 6.5.35 | 5/5 byte-identical |
+
+So the whole of 1.2.3 is a no-op at the machine-code level for cmdit. 6.5.35's headline is a
+register allocator that finally time-shares registers, but its own release notes scope the win to
+straight-line regions, and cmdit's hot paths do not hit it.
+
+⚠ **`docs/benchmarks.md` is therefore NOT re-captured in this release, and its numbers are
+stale for a different reason.** A fresh capture on this tree reads `cmdit_new_floor` **11.4 µs**
+against the documented **13.8 µs**, and `dispatch_before_verb` **153 ns** against **203 ns** —
+but the byte-identity above proves none of that delta is this toolchain bump. That table was
+captured at the v1.0 cut under pin 6.2.44 against 1.0.0 source, so the gap belongs to the
+1.0.0 → 1.2.3 source evolution (ctx 160 → 168 B, verb introspection, completions) and to capture
+conditions. Attributing it needs a bisect, which is its own change, not this one.
+
+### No stdlib delta lands on cmdit's call surface, and that surface is smaller than it looks
+
+`string`, `fmt`, `alloc`, `io`, `vec`, `syscalls`, `args`, `assert` and `bench` all moved; `str`
+is unchanged. Every public signature delta is **additive** (`vec_sort_by`/`vec_select_nth`,
+`arena_new_growable`, the `xmkdir_p`/`xsymlink` family, `signal_default`, the bench clock-overhead
+calibration). Two `alloc` internals were removed — `_arena_alloc`, `_arena_reset` — and cmdit
+references neither.
+
+The reason nothing reaches it: cmdit's **entire** external surface is `alloc`, `args_init`,
+`argc`, `argv`, `getenv`, `strlen`, `load8/64`, `store8/64` and `syscall`. It renders no integer
+to output at all — `_cmdit_eprint`/`_cmdit_oprint` are raw `syscall(1, …)` string writes, and an
+int/range error prints the flag name and a fixed message, never the value. And every stdlib
+entry point it *does* call is **byte-identical** across the two snapshots — `getenv`, `strlen`,
+`alloc`, `args_init`, `argc`, `argv`, compared body-for-body; `getenv` merely moved down
+`io.cyr`, and `args.cyr`'s sole change is a comment. Which is why the lib-swap A/B above comes
+out byte-identical rather than merely equivalent.
+
+⚠ Two changes in the refresh look like they should matter here and **do not** — recorded so the
+next reader does not re-derive it:
+
+- **`string.cyr:print_num` i64::MIN** (cyrius 6.5.8) — `0 - n` is a no-op at the minimum, so the
+  old `n > 0` loop emitted zero digits and printed a bare `-`. cmdit never calls `print_num`
+  (0 references in `src/` and `dist/`).
+- **`assert.cyr:assert_eq`** moved its `got`/`expected` output from `fmt_int` (fd 1) to
+  `efmt_int` (fd 2). cmdit's harness uses `assert`/`assert_summary`, not `assert_eq`.
+
+**267/267 assertions green, unchanged from 1.2.2**, plus fuzz, all 8 benchmarks, and the three
+demo programs. `dist/cmdit.cyr` regenerated at 1.2.3; `cyrius distlib` on 6.5.35 additionally
+emits the **`dist/cmdit.deps`** sidecar (the 10 stdlib leaves this fold needs in scope), which
+`cyrius deps` consumes on the consumer side — new file, tracked, matching stiva.
+
 ## [1.2.2] - 2026-07-26
 
 **A verb could not forward a command line.** Both halves found by adversarial review of stiva's

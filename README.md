@@ -5,8 +5,10 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.1.0 — public API frozen at 1.0.0; 1.1.0 adds the table-only help
-renderer (`cmdit_help_flags`, append-only). **License:** GPL-3.0-only. Distributed as
+**Status:** v1.2.3 — public API frozen at 1.0.0; everything since is append-only on it
+(1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
+command-line forwarding). 1.2.3 is maintenance only — toolchain pin 6.5.35 and a vendored
+stdlib refresh, with no source change. **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
 ## Why

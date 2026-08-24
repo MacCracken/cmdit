@@ -5,6 +5,33 @@
 
 ## Version
 
+**1.2.3** — built 2026-08-23. **Maintenance only; `src/cmdit.cyr` untouched.** Toolchain
+pin `6.4.78` → `6.5.35` and a full `cyrius lib sync --full` of the vendored stdlib (108
+files, byte-identical to `6.5.35/lib`; 3 new modules + the new `lib/unicode/` subtree,
+nothing removed). Both halves A/B'd and both are **byte-neutral**: holding one fixed and
+swapping the other, all five artifacts (smoke, verbs, completions, tcyr, bcyr) compile
+**byte-identical on sha256**. No stdlib delta reaches cmdit's call surface. **267/267**,
+fuzz + 8 benchmarks green. `dist/` regenerated, now with the `dist/cmdit.deps` sidecar
+that 6.5.35's `cyrius distlib` emits for consumer-side `cyrius deps`.
+
+**1.2.2** — built 2026-07-26. Verb command-line forwarding, both halves found by
+adversarial review of stiva's `exec`. Fixed: `cmdit_dispatch_argv` consumed `--` without
+copying it into the remainder, so the documented escape hatch did nothing. Added:
+`cmdit_verb_trailing_after(h, verb_id, n)` / `cmdit_verb_trailing_at` — a verbatim
+trailing list after `n` positionals, so a global flag inside a forwarded command can no
+longer retarget the host tool. `CMDIT_CTX_SIZE` 160 → 168. **250 → 267 assertions.**
+
+**1.2.1** — built 2026-07-25. Completion-generator fixes from the stiva adoption: the
+verb-position guard was wrong whenever a global flag preceded the verb (both emitters now
+walk preceding words, skipping value-flag arguments), and names are **whitelist-filtered**
+to `[A-Za-z0-9_.-]` because `compgen -W` re-expands each word — quoting alone could not
+stop a `$(…)` in a name executing at TAB time.
+
+**1.2.0** — built 2026-07-25. Verb introspection + shell completions (append-only):
+`cmdit_verb_count` / `_name_at` / `_help_at` / `_is_alias` / `_canonical_at` and
+`cmdit_completions(h, shell)` for bash/zsh/fish. Surfaced by the stiva adoption (35 verbs).
+Toolchain pin `6.2.44` → `6.4.78`.
+
 **1.1.0** — built 2026-06-25. Append-only, non-breaking on the frozen 1.0.0 surface:
 adds **`cmdit_help_flags(h)`**, the table-only flag renderer (just the `  -x, --long
 <type>` rows, no Usage/Options wrapper) for tools that frame their own help (intro +
@@ -19,8 +46,8 @@ complete) and an adversarial security/readiness audit. Added: `cmdit_help_short`
 defaults in help, `cmdit_require_positionals_max` / `_exact` (`TOO_MANY_POSITIONAL = 10`).
 Fixed (audit): `_cmdit_parse_int` overflow range-bypass, unguarded getter idx. Entry
 struct grown 104→112 B (metavar at +104; append-only). The whole output/renderer surface
-is now tested. **230 tests** green; benchmarks ([`benchmarks.md`](benchmarks.md)) +
-security audit ([`audit/2026-06-25-audit.md`](audit/2026-06-25-audit.md)); the
+is now tested. **230 tests** green; benchmarks ([`benchmarks.md`](../benchmarks.md)) +
+security audit ([`audit/2026-06-25-audit.md`](../audit/2026-06-25-audit.md)); the
 public/internal constant boundary is delimited in [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md).
 `dist/cmdit.cyr` regenerated.
 
@@ -48,7 +75,10 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Toolchain
 
-- **Cyrius pin**: `6.2.44` (in `cyrius.cyml [package].cyrius`)
+- **Cyrius pin**: `6.5.35` (in `cyrius.cyml [package].cyrius`) — CI derives the
+  toolchain from it, so there is no version to sync in the workflow YAML.
+- **Vendored `lib/`**: 108 files, exactly `6.5.35/lib` (`cyrius lib sync --full`).
+  A drift in either direction warns on every build; both warnings are currently silent.
 
 ## Source
 
@@ -56,18 +86,23 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   `lib/flags.cyr`, byte-compatible types/error-codes, renamed to `cmdit_*`, +
   materialize bridge / auto help+version / exit constants / raw-argv escape; 0.2.0
   flag modifiers; 0.3.0 verb dispatch; 1.0.0 `help_short`/`version_short` + `metavar`
-  + `require_positionals_max`/`_exact`). Entry struct 112 B, ctx 160 B (append-only);
+  + `require_positionals_max`/`_exact`; 1.1.0 `help_flags`; 1.2.0 verb introspection +
+  `cmdit_completions`; 1.2.2 `verb_trailing_after`). Entry struct 112 B, ctx **168 B**
+  (append-only; 160 → 168 at 1.2.2 for the trailing-list slot);
   verbs are a separate lazy-allocated table. The pure `cmdit_parse_argv` core is
   `/proc`- and env-free; `cmdit_dispatch_argv` is its pure verb-dispatch sibling;
   env + required run in `cmdit_finalize` (chained by `cmdit_parse`/`cmdit_dispatch`).
 - `programs/smoke.cyr` — single-command demo (enum/range/repeat/env + flag-named errors).
 - `programs/verbs.cyr` — verb-dispatch demo (verb/alias/global-before-after/
   per-verb scope/require_positionals/unknown-verb list).
+- `programs/completions.cyr` — shell-completion demo (1.2.0).
 - `dist/cmdit.cyr` — generated bundle (`cyrius distlib`); consumers import this.
+- `dist/cmdit.deps` — the stdlib-leaf sidecar `cyrius distlib` emits alongside it
+  (new at 1.2.3, from toolchain 6.5.35); `cyrius deps` consumes it consumer-side.
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **230/230**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+- `tests/cmdit.tcyr` — **267/267**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
   `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
@@ -78,7 +113,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
 - `tests/cmdit.bcyr` — **8 real benchmarks** (`cmdit_new` floor, register/parse
   subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate);
-  see [`benchmarks.md`](benchmarks.md). `tests/cmdit.fcyr` — fuzz stub.
+  see [`benchmarks.md`](../benchmarks.md). `tests/cmdit.fcyr` — fuzz stub.
 
 ## Dependencies
 
@@ -93,19 +128,44 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Consumers
 
-- **kii 1.1.0** — re-fold complete (2026-06-25): dropped its hand-rolled flag-set on
-  stdlib `flags` + `build_argv_array` for `[deps.cmdit]`; `cmdit_new`/`cmdit_parse`/
-  `cmdit_get_*`/`cmdit_positional` + auto `--help`/`--version`. 468/468 tests green,
-  rendering verified. The first consumer + the faithful-extraction proof.
+Four repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Tags are as pinned in each
+consumer's `cyrius.cyml` on 2026-08-23 — **none has moved to 1.2.3 yet**, and nothing
+forces them to: 1.2.3 is byte-neutral, so a re-pin buys only the fresher vendored stdlib.
+
+- **stiva 3.0.19** — pinned `1.2.2`, the most demanding consumer (35 verbs) and the
+  source of the 1.2.0/1.2.1/1.2.2 work: verb introspection + completions, the two
+  completion-generator fixes, and the `--` forwarding + `verb_trailing_after` pair.
+- **kii 1.4.1** — pinned `1.1.0`. The first consumer + the faithful-extraction proof:
+  dropped its hand-rolled flag-set on stdlib `flags` + `build_argv_array`;
+  `cmdit_new`/`cmdit_parse`/`cmdit_get_*`/`cmdit_positional` + auto `--help`/`--version`.
+- **anuenue 1.2.0** — pinned `1.1.0`. The second worked migration; the rich-help consumer
+  that surfaced `cmdit_help_flags`.
+- **ifran 2.2.0** — pinned `1.1.0`.
 
 ## Next
 
-**v1.0.0 is freeze-ready — all six roadmap criteria met** (API frozen + documented,
-230/230, benchmarks, kii green, CHANGELOG dated, security audit). The remaining action
-is the user's: tag `1.0.0` (git is user-owned). Post-v1: adoption (the Tier-1/2/3
-drop-ins are demand-gated; kii green) and the confirmed-deferred v2 backlog (mutex/
-required-if sugar, optional-value flags, bundled shorts, `--no-foo`, named-positional
-help, config cascades — see [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md)). A
-known, deferred micro-opt: `cmdit_new`'s byte-at-a-time entry memzero (the ~13.8 µs
-handle-construction floor) could be word-at-a-time (see [`benchmarks.md`](benchmarks.md)).
+v1.0.0 shipped and the API is frozen; 1.1–1.2 are all append-only on it. 1.2.3 carries no
+source change — it exists to clear the toolchain/lib drift that warned on every build.
+
+Open, in rough order:
+
+- **Consumer re-pins are optional.** stiva sits on 1.2.2, kii/anuenue/ifran on 1.1.0.
+  Since 1.2.3 is byte-neutral there is no correctness reason to move; kii/anuenue/ifran
+  would gain the 1.2.0 introspection + completions surface if they want it.
+- **`docs/benchmarks.md` is stale and not from this release.** A fresh capture reads
+  `cmdit_new_floor` 11.4 µs vs the documented 13.8 µs and `dispatch_before_verb` 153 ns
+  vs 203 ns, but the 1.2.3 A/B proves the toolchain contributed none of it — the table is
+  a v1.0 capture under pin 6.2.44 against 1.0.0 source. Re-capturing honestly needs a
+  1.0.0 → 1.2.3 bisect. See [`../benchmarks.md`](../benchmarks.md).
+- **Pre-existing, unrelated to 1.2.3** (identical under 6.4.78 and 6.5.35, so not
+  upgrade-induced): `cyrius fmt --check` reports `src/cmdit.cyr:950` off canonical
+  continuation indent; `cyrius lint` reports 4 untracked deferrals + 7 over-120-column
+  lines; `cyrius doc --check` reports 46 documented / 8 undocumented public functions
+  (`cmdit_version_short`, `cmdit_get_int`, `cmdit_get_str`, `cmdit_repeat_get`,
+  `cmdit_positional`, `cmdit_verb_argc`, `cmdit_verb_argv`, `cmdit_raw_argc`).
+- **Deferred v2 backlog**: mutex/required-if sugar, optional-value flags, bundled shorts,
+  `--no-foo`, named-positional help, config cascades — see
+  [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md). Plus the known micro-opt:
+  `cmdit_new`'s byte-at-a-time entry memzero could be word-at-a-time.
+
 See [`roadmap.md`](roadmap.md) + `agnosticos/docs/development/planning/cmdit.md`.
