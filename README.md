@@ -5,10 +5,13 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.2.3 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.2.4 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
-command-line forwarding). 1.2.3 is maintenance only — toolchain pin 6.5.35 and a vendored
-stdlib refresh, with no source change. **License:** GPL-3.0-only. Distributed as
+command-line forwarding). **1.2.4 is a security release** — the completion generator
+interpolated the program name, which on the `cmdit_new(0)` path comes from `argv[0]`,
+raw into the scripts it emits; it also closes three memory-safety/contract defects. No
+API change. **Consumers on any earlier version that generate completions should update.**
+**License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
 ## Why
@@ -184,14 +187,27 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   `cmdit_metavar` + shown defaults, `cmdit_require_positionals_max`/`_exact`) plus
   the freeze: API frozen, **230/230 tests**, [benchmarks](docs/benchmarks.md), and a
   [security audit](docs/audit/2026-06-25-audit.md) pass (this cut).
+- **1.1.0** — `cmdit_help_flags`, the table-only flag renderer for tools that frame
+  their own help around a generated flag list.
+- **1.2.0** — verb introspection (`cmdit_verb_count` / `_name_at` / `_help_at` /
+  `_is_alias` / `_canonical_at`) + `cmdit_completions` for bash/zsh/fish.
+- **1.2.1** — completion-generator fixes: the verb-position guard, and
+  whitelist-filtered names (`compgen -W` re-expands, so escaping alone cannot hold).
+- **1.2.2** — verb command-line forwarding: `--` is forwarded past the dispatcher, and
+  `cmdit_verb_trailing_after` takes a verbatim trailing argument list.
+- **1.2.3** — maintenance: toolchain pin 6.5.35 + vendored stdlib refresh, no source change.
+- **1.2.4** — **security + P-1 audit**: the completion generator no longer interpolates the
+  program name raw (an `argv[0]`-derived name could inject shell into the emitted script);
+  plus the flag-modifier and repeat-accessor bounds guards, the `err_entry` reset, and
+  alloc-failure/input validation. **345/345 tests**, every fix mutation-proven.
 
-First consumer (re-fold): **kii** drops its in-repo flag-set wrapper for cmdit.
+Consumers: **kii**, **anuenue**, **ifran**, **stiva** — all on `[deps.cmdit]`.
 
 ## Build
 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (230/230)
+cyrius test                                          # run tests/*.tcyr  (345/345)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

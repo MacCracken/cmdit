@@ -21,6 +21,42 @@ fn cstreq(a, b): i64 {
     return 1;
 }
 
+# --- 1.2.4: capture the completion emitters' real stdout -----------------------
+# The generated script is the artefact that gets SOURCED, so the security test
+# has to assert on the bytes actually emitted, not merely on the helper the
+# emitter is supposed to call. Testing the predicate alone would still pass if
+# someone dropped the sanitiser call from an emitter. pipe(2) + dup2(2) on fd 1;
+# the scripts are ~1-2 KB against a 64 KB pipe buffer, so no deadlock.
+fn capture_completions(h, shell, buf, cap): i64 {
+    var pfd[8];                                  # int fds[2]
+    if (syscall(22, &pfd) != 0) { return 0 - 1; }
+    var rfd = load32(&pfd);
+    var wfd = load32(&pfd + 4);
+    var saved = syscall(32, 1);                  # dup(1)
+    syscall(33, wfd, 1);                         # dup2(wfd, 1)
+    cmdit_completions(h, shell);
+    syscall(33, saved, 1);                       # restore fd 1
+    syscall(3, wfd);
+    syscall(3, saved);
+    var n = syscall(0, rfd, buf, cap - 1);       # read
+    syscall(3, rfd);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return n;
+}
+
+# 1 when `hay` contains `needle` (both NUL-terminated).
+fn contains(hay, needle): i64 {
+    var i = 0;
+    while (load8(hay + i) != 0) {
+        var k = 0;
+        while (load8(needle + k) != 0 && load8(hay + i + k) == load8(needle + k)) { k = k + 1; }
+        if (load8(needle + k) == 0) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -92,7 +128,9 @@ fn main() {
     # the range-bypass it used to enable: wrap-to-1 would have passed 1..4096.
     var h7r = cmdit_new("t");
     var c7r = cmdit_int(h7r, 0, "width", 80, ""); cmdit_range(h7r, c7r, 1, 4096);
-    var av7r = alloc(3 * 8); store64(av7r, "t"); store64(av7r + 8, "--width"); store64(av7r + 16, "18446744073709551617");
+    var av7r = alloc(3 * 8);
+    store64(av7r, "t"); store64(av7r + 8, "--width");
+    store64(av7r + 16, "18446744073709551617");
     assert(cmdit_parse_argv(h7r, 3, av7r) == CMDIT_RESULT_ERR, "overflow cannot wrap into range");
     assert(cmdit_get_int(h7r, c7r) == 80, "default kept (no wrapped value stored)");
     # boundary: the largest valid i64 still parses (overflow guard is not off-by-one).
@@ -430,7 +468,6 @@ fn main() {
     assert(cmdit_verb_argc(hv1) == 1, "remainder argc = 1");
     assert(cstreq(load64(cmdit_verb_argv(hv1)), "add") == 1, "remainder[0] = verb name");
 
-
     # ══ 1.2.2: '--' forwarding + trailing-verbatim ══════════
     #
     # Both halves of "a verb cannot forward a command line". Before 1.2.2 the
@@ -544,21 +581,25 @@ fn main() {
     test_group("verb: global str BEFORE verb consumes its value");
     var hv7 = cmdit_new("t");
     var g7 = cmdit_str(hv7, 0, "config", 0, ""); var a7 = cmdit_verb(hv7, "add", "");
-    var dv7 = alloc(4 * 8); store64(dv7, "t"); store64(dv7 + 8, "--config"); store64(dv7 + 16, "c.toml"); store64(dv7 + 24, "add");
+    var dv7 = alloc(4 * 8);
+    store64(dv7, "t"); store64(dv7 + 8, "--config");
+    store64(dv7 + 16, "c.toml"); store64(dv7 + 24, "add");
     assert(cmdit_dispatch_argv(hv7, 4, dv7) == CMDIT_OK, "dispatch OK");
     assert(cstreq(cmdit_get_str(hv7, g7), "c.toml") == 1, "--config consumed its value");
     assert(cmdit_verb_matched(hv7) == a7, "verb = add");
 
-    test_group("verb: unknown flag AFTER verb is deferred to the remainder");
+    test_group("verb: unknown flag AFTER verb is deferred to the remainder");   #skip-lint
     var hv8 = cmdit_new("t");
     var g8 = cmdit_bool(hv8, 0, "verbose", ""); cmdit_verb(hv8, "add", "");
-    var dv8 = alloc(4 * 8); store64(dv8, "t"); store64(dv8 + 8, "add"); store64(dv8 + 16, "--force"); store64(dv8 + 24, "x");
+    var dv8 = alloc(4 * 8);
+    store64(dv8, "t"); store64(dv8 + 8, "add");
+    store64(dv8 + 16, "--force"); store64(dv8 + 24, "x");
     assert(cmdit_dispatch_argv(hv8, 4, dv8) == CMDIT_OK, "dispatch OK");
     assert(cmdit_get_bool(hv8, g8) == 0, "global --verbose untouched");
     assert(cmdit_verb_argc(hv8) == 3, "remainder = [add, --force, x]");
     assert(cstreq(load64(cmdit_verb_argv(hv8) + 8), "--force") == 1, "remainder[1] = --force");
 
-    test_group("verb: help BEFORE verb -> CMDIT_HELP; AFTER verb -> deferred");
+    test_group("verb: help BEFORE verb -> CMDIT_HELP; AFTER verb -> deferred");   #skip-lint
     var hv9 = cmdit_new("t");
     cmdit_verb(hv9, "add", "");
     var dv9 = alloc(2 * 8); store64(dv9, "t"); store64(dv9 + 8, "--help");
@@ -566,7 +607,7 @@ fn main() {
     var hv9b = cmdit_new("t");
     cmdit_verb(hv9b, "add", "");
     var dv9b = alloc(3 * 8); store64(dv9b, "t"); store64(dv9b + 8, "add"); store64(dv9b + 16, "--help");
-    assert(cmdit_dispatch_argv(hv9b, 3, dv9b) == CMDIT_OK, "--help after verb -> OK (deferred)");
+    assert(cmdit_dispatch_argv(hv9b, 3, dv9b) == CMDIT_OK, "--help after verb -> OK (deferred)");   #skip-lint
     assert(cmdit_verb_argc(hv9b) == 2, "remainder = [add, --help] for verb scope");
 
     test_group("verb: '--' before verb still lets the next token be the verb");
@@ -580,7 +621,8 @@ fn main() {
     var hp1 = cmdit_new("tool");
     cmdit_verb(hp1, "add", "");
     var dp1 = alloc(5 * 8);
-    store64(dp1, "tool"); store64(dp1 + 8, "add"); store64(dp1 + 16, "--name"); store64(dp1 + 24, "bob"); store64(dp1 + 32, "file.txt");
+    store64(dp1, "tool"); store64(dp1 + 8, "add"); store64(dp1 + 16, "--name");
+    store64(dp1 + 24, "bob"); store64(dp1 + 32, "file.txt");
     assert(cmdit_dispatch_argv(hp1, 5, dp1) == CMDIT_OK, "dispatch OK");
     assert(cmdit_verb_argc(hp1) == 4, "remainder = [add, --name, bob, file.txt]");
     var vh1 = cmdit_new("tool add");
@@ -593,7 +635,9 @@ fn main() {
     test_group("verb: nested sub-verb via re-entry on the remainder");
     var hn = cmdit_new("tool");
     cmdit_verb(hn, "remote", "");
-    var dn = alloc(4 * 8); store64(dn, "tool"); store64(dn + 8, "remote"); store64(dn + 16, "add"); store64(dn + 24, "origin");
+    var dn = alloc(4 * 8);
+    store64(dn, "tool"); store64(dn + 8, "remote");
+    store64(dn + 16, "add"); store64(dn + 24, "origin");
     assert(cmdit_dispatch_argv(hn, 4, dn) == CMDIT_OK, "parent dispatch OK");
     var sh = cmdit_new("tool remote");
     var sv_add = cmdit_verb(sh, "add", "");
@@ -668,12 +712,12 @@ fn main() {
     assert(cmdit_parse_argv(hpx, 2, avpx) == CMDIT_RESULT_ERR, "prefix 'neve' rejected");
     assert(cmdit_error(hpx) == CMDIT_ERR_BAD_ENUM, "error = BAD_ENUM (not a partial match)");
 
-    test_group("verb: unknown flag BEFORE the verb is a hard error (not deferred)");
+    test_group("verb: unknown flag BEFORE the verb is a hard error (not deferred)");   #skip-lint
     var hub = cmdit_new("t");
     cmdit_bool(hub, 0, "verbose", ""); cmdit_verb(hub, "add", "");
     var dub = alloc(3 * 8); store64(dub, "t"); store64(dub + 8, "--bogus"); store64(dub + 16, "add");
     assert(cmdit_dispatch_argv(hub, 3, dub) == CMDIT_RESULT_ERR, "pre-verb unknown -> RESULT_ERR");
-    assert(cmdit_error(hub) == CMDIT_ERR_UNKNOWN, "error = UNKNOWN (not UNKNOWN_VERB, not deferred)");
+    assert(cmdit_error(hub) == CMDIT_ERR_UNKNOWN, "error = UNKNOWN (not UNKNOWN_VERB, not deferred)");   #skip-lint
 
     test_group("verb: global value flag missing its value during dispatch -> MISSING_VALUE");
     var hgm = cmdit_new("t");
@@ -786,7 +830,8 @@ fn main() {
     cmdit_parse_argv(pe9, 1, pav9); cmdit_require_positionals(pe9, 2);
     assert(cmdit_print_error(pe9) == CMDIT_EXIT_USAGE, "MISSING_POSITIONAL -> EXIT_USAGE");
     var pe10 = cmdit_new("prog");                                             # else: unrecognized code (defensive)
-    store64(pe10 + 56, 99);                                                   # force a bogus last_error -> "argument error"
+    # force a bogus last_error -> the "argument error" fallback arm
+    store64(pe10 + 56, 99);
     assert(cmdit_print_error(pe10) == CMDIT_EXIT_USAGE, "unrecognized code -> argument error -> EXIT_USAGE");
 
     # ══ 1.2.0: verb introspection + completions ══════════
@@ -824,6 +869,181 @@ fn main() {
     assert(cmdit_completions(ch, "elvish") == 0 - 1, "unknown shell -> -1");
     assert(cmdit_completions(ch, 0) == 0 - 1, "null shell -> -1");
     assert(cmdit_completions(0, "bash") == 0 - 1, "null handle -> -1");
+
+    # ══ 1.2.4 audit fixes ══════════════════════
+    # Every assertion below fails against 1.2.3. See CHANGELOG [1.2.4].
+
+    test_group("1.2.4 security: shell command-word alphabet");
+    # Exhaustive over every byte value, so the whitelist cannot be widened by
+    # accident. A generated completion script is SOURCED by the user's shell,
+    # so a byte reaching it verbatim is code.
+    var bc = 0;
+    var allowed = 0;
+    while (bc < 256) {
+        var want = 0;
+        if (bc >= 48 && bc <= 57) { want = 1; }
+        if (bc >= 65 && bc <= 90) { want = 1; }
+        if (bc >= 97 && bc <= 122) { want = 1; }
+        if (bc == 95 || bc == 46 || bc == 45) { want = 1; }
+        if (_cmdit_is_cmdname_byte(bc) != want) { allowed = allowed + 1; }
+        bc = bc + 1;
+    }
+    assert(allowed == 0, "cmdname alphabet is exactly [A-Za-z0-9_.-] over all 256 bytes");
+    # The bytes that actually turn a name into a command, called out by name so
+    # a regression reads as what it is rather than as an off-by-one in a loop.
+    assert(_cmdit_is_cmdname_byte(10) == 0, "newline rejected (ends the comment, starts a command)");
+    assert(_cmdit_is_cmdname_byte(36) == 0, "$ rejected (expansion)");
+    assert(_cmdit_is_cmdname_byte(96) == 0, "backtick rejected (substitution)");
+    assert(_cmdit_is_cmdname_byte(39) == 0, "single quote rejected");
+    assert(_cmdit_is_cmdname_byte(34) == 0, "double quote rejected");
+    assert(_cmdit_is_cmdname_byte(59) == 0, "; rejected");
+    assert(_cmdit_is_cmdname_byte(38) == 0, "& rejected");
+    assert(_cmdit_is_cmdname_byte(124) == 0, "| rejected");
+    assert(_cmdit_is_cmdname_byte(32) == 0, "space rejected (word split)");
+    assert(_cmdit_is_cmdname_byte(40) == 0, "( rejected");
+    assert(_cmdit_is_cmdname_byte(62) == 0, "> rejected (redirect)");
+    assert(_cmdit_is_cmdname_byte(0) == 0, "NUL rejected");
+    assert(_cmdit_name_is_safe("tool\ntouch /tmp/x") == 0, "injected prog name is not safe");
+    assert(_cmdit_name_is_safe("cmdit-smoke") == 1, "an ordinary hyphenated name stays safe");
+    assert(_cmdit_name_is_safe("foo.sh") == 1, "a dotted name stays safe");
+
+    test_group("1.2.4 memory safety: modifier idx guards");
+    # The 1.0.0 audit guarded the GETTERS. The modifiers kept only `idx < 0`,
+    # so an out-of-range idx was an out-of-bounds WRITE: cmdit_required(h, 64)
+    # read-modify-wrote entries+7216, which the bump allocator places 48 bytes
+    # into the positional array, corrupting a live cstr pointer.
+    var gh = cmdit_new("t");
+    var gav = alloc(9 * 8);
+    store64(gav + 0*8, "t");
+    store64(gav + 1*8, "p0"); store64(gav + 2*8, "p1"); store64(gav + 3*8, "p2");
+    store64(gav + 4*8, "p3"); store64(gav + 5*8, "p4"); store64(gav + 6*8, "p5");
+    store64(gav + 7*8, "p6"); store64(gav + 8*8, "p7");
+    assert(cmdit_parse_argv(gh, 9, gav) == CMDIT_OK, "8 positionals parsed");
+    var p6_before = cmdit_positional(gh, 6);
+    assert(cmdit_required(gh, 64) == 0 - 1, "cmdit_required past the flag cap -> -1");
+    assert(cmdit_positional(gh, 6) == p6_before, "positional[6] pointer not corrupted");
+    assert(cstreq(cmdit_positional(gh, 6), "p6") == 1, "positional[6] still reads p6");
+    assert(cmdit_range(gh, 999, 0, 10) == 0 - 1, "cmdit_range out of range -> -1");
+    assert(cmdit_env(gh, 999, "HOME") == 0 - 1, "cmdit_env out of range -> -1");
+    assert(cmdit_metavar(gh, 999, "F") == 0 - 1, "cmdit_metavar out of range -> -1");
+    assert(cmdit_required(gh, 0 - 1) == 0 - 1, "cmdit_required(-1) still -1 (ignored registration)");
+
+    test_group("1.2.4 memory safety: repeat accessor idx guards");
+    # cmdit_repeat_get computed the entry pointer unchecked and then FOLLOWED
+    # the list pointer read from it — not just an out-of-bounds read, a
+    # dereference of whatever those bytes were.
+    var r124h = cmdit_new("t");
+    var rF = cmdit_repeat(r124h, 72, "header", "");
+    var rav = alloc(3 * 8);
+    store64(rav + 0*8, "t"); store64(rav + 1*8, "--header"); store64(rav + 2*8, "a");
+    assert(cmdit_parse_argv(r124h, 3, rav) == CMDIT_OK, "repeat parse ok");
+    assert(cmdit_repeat_count(r124h, rF) == 1, "one occurrence recorded");
+    assert(cmdit_repeat_count(r124h, 999) == 0, "repeat_count out of range -> 0");
+    assert(cmdit_repeat_count(r124h, 0 - 1) == 0, "repeat_count negative -> 0");
+    assert(cmdit_repeat_get(r124h, 999, 0) == 0, "repeat_get out of range idx -> 0");
+    assert(cmdit_repeat_get(r124h, 0 - 1, 0) == 0, "repeat_get negative idx -> 0");
+    # A non-repeat flag has a 0 list pointer; asking for element 0 must not follow it.
+    var rB = cmdit_bool(r124h, 0, "plain", "");
+    assert(cmdit_repeat_get(r124h, rB, 0) == 0, "repeat_get on a non-repeat flag -> 0");
+
+    test_group("1.2.4 null-handle tolerance");
+    assert(cmdit_get_bool(0, 0) == 0, "get_bool(0) -> 0");
+    assert(cmdit_get_int(0, 0) == 0, "get_int(0) -> 0");
+    assert(cmdit_get_str(0, 0) == 0, "get_str(0) -> 0");
+    assert(cmdit_get_enum(0, 0) == 0 - 1, "get_enum(0) -> -1");
+    assert(cmdit_seen(0, 0) == 0, "seen(0) -> 0");
+    assert(cmdit_repeat_count(0, 0) == 0, "repeat_count(0) -> 0");
+    assert(cmdit_repeat_get(0, 0, 0) == 0, "repeat_get(0) -> 0");
+    assert(cmdit_required(0, 0) == 0 - 1, "required(0) -> -1");
+    assert(cmdit_range(0, 0, 0, 1) == 0 - 1, "range(0) -> -1");
+    assert(cmdit_env(0, 0, "HOME") == 0 - 1, "env(0) -> -1");
+    assert(cmdit_metavar(0, 0, "F") == 0 - 1, "metavar(0) -> -1");
+    assert(cmdit_help_short(0, 120) == 0, "help_short(0) is a no-op, not a null write");
+    assert(cmdit_version_short(0, 120) == 0, "version_short(0) is a no-op, not a null write");
+    assert(cmdit_verb_trailing_after(0, 0, 1) == 0 - 1, "trailing_after(0) -> -1");
+
+    test_group("1.2.4 correctness: err_entry does not leak across parses");
+    # cmdit_err_flag documents -1 for errors that name no registered flag
+    # (UNKNOWN / BUNDLED). It held only on a virgin handle: err_entry was never
+    # cleared, so a SECOND parse reported the FIRST parse's flag.
+    var eh = cmdit_new("t");
+    var eN = cmdit_str(eh, 110, "name", 0, "");
+    var eav1 = alloc(2 * 8);
+    store64(eav1 + 0*8, "t"); store64(eav1 + 1*8, "--name");        # missing value
+    assert(cmdit_parse_argv(eh, 2, eav1) == CMDIT_RESULT_ERR, "first parse errors");
+    assert(cmdit_error(eh) == CMDIT_ERR_MISSING_VALUE, "first error is MISSING_VALUE");
+    assert(cmdit_err_flag(eh) == eN, "first error names --name");
+    var eav2 = alloc(2 * 8);
+    store64(eav2 + 0*8, "t"); store64(eav2 + 1*8, "--nope");        # unknown flag
+    assert(cmdit_parse_argv(eh, 2, eav2) == CMDIT_RESULT_ERR, "second parse errors");
+    assert(cmdit_error(eh) == CMDIT_ERR_UNKNOWN, "second error is UNKNOWN");
+    assert(cmdit_err_flag(eh) == 0 - 1, "UNKNOWN names no flag (was: stale --name)");
+    # Same for BUNDLED, which cmdit_print_error DOES prefix with the flag name.
+    var eav3 = alloc(2 * 8);
+    store64(eav3 + 0*8, "t"); store64(eav3 + 1*8, "-xy");
+    assert(cmdit_parse_argv(eh, 2, eav3) == CMDIT_RESULT_ERR, "bundled parse errors");
+    assert(cmdit_error(eh) == CMDIT_ERR_BUNDLED, "third error is BUNDLED");
+    assert(cmdit_err_flag(eh) == 0 - 1, "BUNDLED names no flag (was: stale --name)");
+    # A clean re-parse must clear the error entirely.
+    var eav4 = alloc(3 * 8);
+    store64(eav4 + 0*8, "t"); store64(eav4 + 1*8, "--name"); store64(eav4 + 2*8, "ok");
+    assert(cmdit_parse_argv(eh, 3, eav4) == CMDIT_OK, "clean re-parse ok");
+    assert(cmdit_error(eh) == CMDIT_ERR_NONE, "error reset by a clean parse");
+    assert(cmdit_err_flag(eh) == 0 - 1, "err_flag reset by a clean parse");
+
+    test_group("1.2.4 input validation: trailing_after / negative argc");
+    var th = cmdit_new("t");
+    var tv = cmdit_verb(th, "exec", "run in a container");
+    assert(cmdit_verb_trailing_after(th, tv, 0 - 1) == 0 - 1, "trailing_after(-1) rejected");
+    assert(cmdit_verb_trailing_at(th, tv) == 0 - 1, "rejected mark left the verb unmarked");
+    assert(cmdit_verb_trailing_after(th, tv, 0 - 5) == 0 - 1, "trailing_after(-5) rejected");
+    assert(cmdit_verb_trailing_at(th, tv) == 0 - 1, "still unmarked");
+    assert(cmdit_verb_trailing_after(th, tv, 1) == tv, "trailing_after(1) accepted");
+    assert(cmdit_verb_trailing_at(th, tv) == 1, "mark reads back as 1");
+    assert(cmdit_verb_trailing_after(th, 999, 1) == 0 - 1, "trailing_after past the verb table -> -1");
+    # A negative argc used to make alloc() return 0 and the NUL-terminator store
+    # write to address 0.
+    var dh = cmdit_new("t");
+    cmdit_verb(dh, "go", "");
+    var dav = alloc(2 * 8);
+    store64(dav + 0*8, "t"); store64(dav + 1*8, "go");
+    assert(cmdit_dispatch_argv(dh, 0 - 1, dav) == CMDIT_OK, "negative argc is clamped, not a null write");
+    assert(cmdit_verb_matched(dh) == 0 - 1, "no verb matched from an empty argv");
+
+    test_group("1.2.4 security: emitters actually sanitise the program name");
+    # The end-to-end case. prog_name here is what argv[0] would be on the
+    # documented cmdit_new(0) path, chosen by whoever execs the tool. Against
+    # 1.2.3 the captured script contained a bare `touch /tmp/cmdit_pwned` line,
+    # passed `bash -n`, and ran it on `source`.
+    var evil = "tool\ntouch /tmp/cmdit_pwned\n#";
+    var cbuf = alloc(8192);
+    var xh = cmdit_new(evil);
+    cmdit_verb(xh, "run", "run a thing");
+    cmdit_int(xh, 114, "root", 0, "data root");
+
+    var cn = capture_completions(xh, "bash", cbuf, 8192);
+    assert(cn > 0, "bash completion captured");
+    assert(contains(cbuf, "touch /tmp/cmdit_pwned") == 0, "bash: injected command absent");
+    assert(contains(cbuf, "\n") == 1, "bash: script still has real newlines (capture is sane)");
+    assert(contains(cbuf, "_complete") == 1, "bash: still a working completion");
+
+    cn = capture_completions(xh, "zsh", cbuf, 8192);
+    assert(cn > 0, "zsh completion captured");
+    assert(contains(cbuf, "touch /tmp/cmdit_pwned") == 0, "zsh: injected command absent");
+    assert(contains(cbuf, "#compdef") == 1, "zsh: still a working completion");
+
+    cn = capture_completions(xh, "fish", cbuf, 8192);
+    assert(cn > 0, "fish completion captured");
+    assert(contains(cbuf, "touch /tmp/cmdit_pwned") == 0, "fish: injected command absent");
+    assert(contains(cbuf, "complete -c") == 1, "fish: still a working completion");
+
+    # A legitimate name must survive verbatim — the fix must not mangle the
+    # ordinary case it exists to protect.
+    var gh2 = cmdit_new("cmdit-smoke");
+    cmdit_verb(gh2, "run", "run a thing");
+    cn = capture_completions(gh2, "fish", cbuf, 8192);
+    assert(cn > 0, "fish completion for an ordinary name captured");
+    assert(contains(cbuf, "complete -c cmdit-smoke") == 1, "a hyphenated prog name is emitted verbatim");
 
     return assert_summary();
 }

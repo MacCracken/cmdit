@@ -4,6 +4,150 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-08-23
+
+**A P-1 audit of the whole library. One finding is a remote-ish code execution in the completion
+generator; three more are memory-safety or contract defects.** No API change — every fix is a
+guard, and the frozen 1.0.0 surface plus the 1.1–1.2 additions behave identically on every input
+that was already valid. **267 → 345 assertions**, and each fix below is **mutation-proven**: the
+fix was reverted, and a test failed.
+
+### Fixed (SECURITY) — the program name was injected verbatim into generated completion scripts
+
+`cmdit_completions` interpolated `prog` **raw** into all three emitters, in five places: the bash
+`# bash completion for <prog>` comment and its `complete -F _<fn>_complete <prog>` trailer, zsh's
+`#compdef <prog>`, and fish's `complete -c <prog> -f` plus one `complete -c <prog>` per verb. A
+completion script is *sourced by the user's shell*, so a byte reaching it verbatim is code.
+
+`prog` is `prog_name` from `cmdit_new` — and on the documented, tested `cmdit_new(0)` path it is
+adopted from **`argv[0]`**, which is chosen by whoever execs the tool. With
+`argv[0] = "tool\ntouch /tmp/x\n#"` the generated file was:
+
+```
+# bash completion for tool
+touch /tmp/x
+#
+_tool_touch__tmp_x___complete() {
+```
+
+Verified end to end: the result passes `bash -n` — it is a *valid* script — and running
+`source` on it executed the injected command.
+
+⛔ **1.2.1 fixed this class for verb and long-flag names and explicitly named the program name in
+its own notes — but only ever routed it through `_cmdit_oprint_ident` for the shell FUNCTION
+name.** The command-word occurrences were never touched. Anyone reading that changelog would
+reasonably conclude the program name was handled; it was not.
+
+**No shipped consumer is currently exposed** — verified rather than assumed. Exposure needs both
+a `cmdit_completions` call and a program name taken from `argv[0]`. Of the four consumers, only
+stiva calls it, and its top-level handle is `cmdit_new("stiva")`; kii, anuenue and ifran pass
+literals and generate no completions. The defect is real and the fix is worth taking, but nothing
+downstream is broken today.
+
+New `_cmdit_oprint_cmdname` maps every byte outside `[A-Za-z0-9_.-]` to `_`, so the emitted token
+is always exactly one inert word. It **maps rather than drops** (the 1.2.1 remedy for verb names)
+because a completion with no command to attach to is useless. `.` and `-` are kept, so ordinary
+names survive byte-for-byte — `complete -c cmdit-smoke` still reads `cmdit-smoke`, and the
+generated scripts still pass `bash -n` and `zsh -n`.
+
+The alphabet now lives in one predicate, `_cmdit_is_cmdname_byte`, shared with
+`_cmdit_name_is_safe`, and the suite asserts it over **all 256 byte values** rather than over the
+metacharacters someone happened to think of. A second test captures the emitters' real stdout
+through `pipe(2)`/`dup2(2)` and asserts the injected command is absent — testing the predicate
+alone would still pass if an emitter simply stopped calling it, and the mutation run confirms all
+five call sites are individually covered.
+
+### Fixed (memory safety) — the flag modifiers took an unchecked index and WROTE through it
+
+The 1.0.0 audit added `_cmdit_idx_ok` to the typed getters. The modifiers never got it: only
+`idx < 0` was tested, so `cmdit_required` / `cmdit_range` / `cmdit_env` / `cmdit_metavar` turned
+an out-of-range index into an out-of-bounds **write**.
+
+`cmdit_required(h, 64)` — one past `CMDIT_FLAGS_MAX` — read-modify-wrote `entries + 7216`, which
+the bump allocator places **48 bytes into the positional array**. Demonstrated: a live
+`positional[6]` pointer to `"p6"` came back incremented by one, i.e. a valid cstr pointer turned
+into one aimed at the middle of a string. All four now share the getters' guard and return -1.
+
+### Fixed (memory safety) — `cmdit_repeat_get` dereferenced a pointer read from out of bounds
+
+It guarded `i` but not `idx`, and computed `_cmdit_entry(h, idx)` before any check — so a bad
+`idx` did not merely read out of bounds, it **followed the list pointer it found there**.
+`cmdit_repeat_count` was unguarded outright. Both take `_cmdit_idx_ok` now, which also gained a
+null-handle test, hardening every getter that routes through it.
+
+### Fixed (contract) — `err_entry` leaked across parses, so errors named the wrong flag
+
+`cmdit_err_flag` documents -1 for errors that name no registered flag (UNKNOWN / BUNDLED), and
+`cmdit_print_error` prefixes the flag name for every error except UNKNOWN. Neither parse loop
+ever cleared `err_entry`, so that held **only on a virgin handle**. Parse a handle twice — first
+hitting `--name` with no value, then a bundled `-xy` — and 1.2.3 reported:
+
+```
+prog: --name: bundled/attached short flags not supported (use -x -y)
+```
+
+naming a flag from the *previous* parse. `cmdit_parse_argv` and `cmdit_dispatch_argv` now reset
+the error trio (`last_error`, `err_entry`, `err_verb`) on entry. ⭐ Per-site clears were tried
+first and are **not** in the final fix: mutation testing showed them redundant against the reset —
+every such site is downstream of it — so the fix is one mechanism, not two.
+
+### Fixed (input validation)
+
+- `cmdit_verb_trailing_after` accepted a negative `n`. It stores `n + 1`, so `n == -1` silently
+  meant "not marked", and `n < -1` stored a negative that `cmdit_verb_trailing_at`'s `v == 0`
+  test did not catch — handing the dispatcher a nonsense threshold. Now -1, plus the missing
+  null-handle and empty-verb-table guards.
+- `cmdit_dispatch_argv` with a negative `argc` called `alloc((argc+1)*8)`, which returns 0 for a
+  non-positive size, and then wrote the slice's NUL terminator **to address 0**. `argc` is clamped.
+
+### Hardened — stdlib `alloc` returns 0 on failure and every call site ignored it
+
+`lib/alloc.cyr` returns 0 for OOM or an out-of-range size; it does not abort. `cmdit_new` then
+memzeroed 7168 bytes from address 0. Checks added in `cmdit_new` (returns 0), `cmdit_argv`,
+`_cmdit_repeat_push`, `_cmdit_verb_add` and `cmdit_dispatch_argv`.
+
+⚠ **Recorded as unproven:** the `cmdit_new` check is the one change here with no failing test.
+Its three sizes are compile-time constants well inside `ALLOC_MAX`, so no public API call can
+drive `alloc` to return 0 — deleting the line keeps the suite green. It is defence-in-depth
+against an exhausted heap, not behaviour any fixture reaches.
+
+### Removed — one guard that was provably dead
+
+`cmdit_repeat_get`'s null-list check is unreachable: the list is allocated by the same push that
+makes the count non-zero, so `count == 0` whenever the pointer is 0 and the count test above
+already returns. Mutation-verified, not assumed, and replaced by a comment stating the invariant.
+
+### Quality gates — all clean, across every file
+
+`cyrius fmt --check`, `cyrius lint` and `cyrius doc --check` now pass on all seven sources
+(`src/`, three `tests/`, three `programs/`). Measured at the 1.2.3 tree, the baseline was **9
+untracked deferrals and 16 warnings** across those files, plus 8 undocumented functions; it is
+0/0/0 now (the new 1.2.4 tests are held to the same bar):
+
+- **Docs**: 53 documented, **0 undocumented** (was 46/8). The gaps were accessors sharing a block
+  comment with a sibling — `cmdit_get_int`, `cmdit_get_str`, `cmdit_repeat_get`,
+  `cmdit_positional`, `cmdit_verb_argc`, `cmdit_verb_argv`, `cmdit_raw_argc`,
+  `cmdit_version_short` — each now carries its own.
+- **Lint**: 0 deferrals, 0 warnings. One deferral was real (the NOT-supported list) and now
+  cross-references the roadmap and ADR 0003; the rest were the word "deferred" used in its
+  domain sense — a flag deferred into a verb's scope — and carry `#skip-lint` rather than prose
+  bent to satisfy a keyword scan.
+- **Format**: `cyrius fmt` applied; the diff is whitespace-only (`diff -w` is empty).
+- **Corrected a long-standing doc figure**: `docs/development/state.md` has claimed "8 real
+  benchmarks" since 1.0.0, and the 1.2.3 entry above repeated it. `tests/cmdit.bcyr` defines
+  and runs **7** — which is what `docs/benchmarks.md`'s own table has listed all along. Both
+  are now 7.
+
+### No behaviour change on anything that already worked
+
+Every fix is a guard on an input that previously corrupted memory or emitted code, so nothing
+valid should move — checked rather than asserted. The 1.2.3 and 1.2.4 builds of all three demo
+programs were run over **27 invocations** — help, version, every error arm (bad int, out of
+range, bad enum, unknown flag, bundled short, missing value), `-`, `--`, repeats, positionals,
+global-flag-before/after-verb, unknown verb, and all four `completions` shells — and stdout,
+stderr and exit code are **byte-identical** in every case. `cmdit_help`'s output in particular
+is unchanged despite the renderer's `if`/`elif` chain being re-wrapped for the column limit.
+
 ## [1.2.3] - 2026-08-23
 
 **Maintenance: toolchain pin 6.4.78 → 6.5.35 and a full vendored-stdlib refresh.** No change to
@@ -75,7 +219,7 @@ next reader does not re-derive it:
 - **`assert.cyr:assert_eq`** moved its `got`/`expected` output from `fmt_int` (fd 1) to
   `efmt_int` (fd 2). cmdit's harness uses `assert`/`assert_summary`, not `assert_eq`.
 
-**267/267 assertions green, unchanged from 1.2.2**, plus fuzz, all 8 benchmarks, and the three
+**267/267 assertions green, unchanged from 1.2.2**, plus fuzz, all 7 benchmarks, and the three
 demo programs. `dist/cmdit.cyr` regenerated at 1.2.3; `cyrius distlib` on 6.5.35 additionally
 emits the **`dist/cmdit.deps`** sidecar (the 10 stdlib leaves this fold needs in scope), which
 `cyrius deps` consumes on the consumer side — new file, tracked, matching stiva.

@@ -5,13 +5,27 @@
 
 ## Version
 
+**1.2.4** — built 2026-08-23. **P-1 audit of the whole library.** No API change; every fix is
+a guard. One **security** finding: `cmdit_completions` interpolated the program name RAW into
+all three emitters (five sites), and on the documented `cmdit_new(0)` path that name is
+`argv[0]` — attacker-chosen. An `argv[0]` of `"tool\ntouch /tmp/x\n#"` produced a script that
+passed `bash -n` and executed the injected command on `source`. 1.2.1 fixed this class for verb
+and flag names and named the program name in its notes, but only ever sanitised it for the shell
+FUNCTION name. Plus three memory-safety / contract defects: the four flag modifiers took an
+unchecked index and **wrote** through it (`cmdit_required(h, 64)` corrupted a live pointer in the
+positional array); `cmdit_repeat_get` dereferenced a list pointer read from out of bounds; and
+`err_entry` leaked across parses, so a second parse's error named the first parse's flag. Also
+alloc-failure checks, negative-`argc`/`n` validation, and one provably dead guard removed.
+**267 → 345 assertions**, every fix **mutation-proven** (17/17 reverts caught; the one unproven
+guard is recorded as such). `fmt`/`lint`/`doc` now clean on all seven sources.
+
 **1.2.3** — built 2026-08-23. **Maintenance only; `src/cmdit.cyr` untouched.** Toolchain
 pin `6.4.78` → `6.5.35` and a full `cyrius lib sync --full` of the vendored stdlib (108
 files, byte-identical to `6.5.35/lib`; 3 new modules + the new `lib/unicode/` subtree,
 nothing removed). Both halves A/B'd and both are **byte-neutral**: holding one fixed and
 swapping the other, all five artifacts (smoke, verbs, completions, tcyr, bcyr) compile
 **byte-identical on sha256**. No stdlib delta reaches cmdit's call surface. **267/267**,
-fuzz + 8 benchmarks green. `dist/` regenerated, now with the `dist/cmdit.deps` sidecar
+fuzz + 7 benchmarks green. `dist/` regenerated, now with the `dist/cmdit.deps` sidecar
 that 6.5.35's `cyrius distlib` emits for consumer-side `cyrius deps`.
 
 **1.2.2** — built 2026-07-26. Verb command-line forwarding, both halves found by
@@ -102,7 +116,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **267/267**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+- `tests/cmdit.tcyr` — **345/345**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
   `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
@@ -111,7 +125,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   missing-value, `CMDIT_FLAGS_MAX`/`CMDIT_VERB_MAX` cap returns, `cmdit_new(0)`
   argv[0] adoption, and the C5/C3/C1 groups (`help_short`/`version_short` remap+disable,
   metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
-- `tests/cmdit.bcyr` — **8 real benchmarks** (`cmdit_new` floor, register/parse
+- `tests/cmdit.bcyr` — **7 real benchmarks** (`cmdit_new` floor, register/parse
   subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate);
   see [`benchmarks.md`](../benchmarks.md). `tests/cmdit.fcyr` — fuzz stub.
 
@@ -157,12 +171,15 @@ Open, in rough order:
   vs 203 ns, but the 1.2.3 A/B proves the toolchain contributed none of it — the table is
   a v1.0 capture under pin 6.2.44 against 1.0.0 source. Re-capturing honestly needs a
   1.0.0 → 1.2.3 bisect. See [`../benchmarks.md`](../benchmarks.md).
-- **Pre-existing, unrelated to 1.2.3** (identical under 6.4.78 and 6.5.35, so not
-  upgrade-induced): `cyrius fmt --check` reports `src/cmdit.cyr:950` off canonical
-  continuation indent; `cyrius lint` reports 4 untracked deferrals + 7 over-120-column
-  lines; `cyrius doc --check` reports 46 documented / 8 undocumented public functions
-  (`cmdit_version_short`, `cmdit_get_int`, `cmdit_get_str`, `cmdit_repeat_get`,
-  `cmdit_positional`, `cmdit_verb_argc`, `cmdit_verb_argv`, `cmdit_raw_argc`).
+- **Consumers should move to 1.2.4** (it carries the security fix), but **none of the four is
+  currently exposed** — checked, not assumed, on 2026-08-23. Exposure needs BOTH a
+  `cmdit_completions` call and a program name taken from `argv[0]`. Only stiva calls
+  `cmdit_completions` (its `completions` verb), and its top-level handle is
+  `cmdit_new("stiva")` — a literal. kii, anuenue and ifran likewise pass literals and never
+  generate completions. The re-pin closes the path rather than fixing a live break.
+- **`cyrius fmt` / `lint` / `doc --check` are clean on all seven sources** as of 1.2.4 (they
+  reported 9 deferrals, 16 warnings and 8 undocumented functions at 1.2.3). Worth keeping at
+  zero — the noise is what hid the four real deferral entries.
 - **Deferred v2 backlog**: mutex/required-if sugar, optional-value flags, bundled shorts,
   `--no-foo`, named-positional help, config cascades — see
   [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md). Plus the known micro-opt:

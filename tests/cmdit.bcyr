@@ -91,7 +91,9 @@ fn main(): i64 {
     var hd = cmdit_new("tool");
     cmdit_bool(hd, 0, "verbose", "");
     cmdit_verb(hd, "add", ""); cmdit_verb(hd, "remove", "");
-    var avb = alloc(4 * 8); store64(avb, "tool"); store64(avb + 8, "--verbose"); store64(avb + 16, "add"); store64(avb + 24, "x");
+    var avb = alloc(4 * 8);
+    store64(avb, "tool"); store64(avb + 8, "--verbose");
+    store64(avb + 16, "add"); store64(avb + 24, "x");
     var b5 = bench_new("dispatch_before_verb");
     bench_batch_start(b5);
     var i5 = 0;
@@ -101,7 +103,9 @@ fn main(): i64 {
 
     # 6. dispatch_after_verb — same, global AFTER the verb. Should ~equal #5 (the
     #    payoff of resolving before-OR-after in ONE pass; a 2-scan impl would be ~2x).
-    var ava = alloc(4 * 8); store64(ava, "tool"); store64(ava + 8, "add"); store64(ava + 16, "--verbose"); store64(ava + 24, "x");
+    var ava = alloc(4 * 8);
+    store64(ava, "tool"); store64(ava + 8, "add");
+    store64(ava + 16, "--verbose"); store64(ava + 24, "x");
     var b6 = bench_new("dispatch_after_verb");
     bench_batch_start(b6);
     var i6 = 0;
