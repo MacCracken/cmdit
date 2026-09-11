@@ -4,6 +4,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-09-11
+
+### Changed
+
+- **Toolchain `6.5.35` → `6.6.2`.** No source change. cmdit constructs no
+  `Result` / `Option` / `Either`, so the 6.6.0 value form has no surface here:
+  zero sites the compiler rejects, zero fail-open sites, and no arity collision
+  across the compile set. **345 assertions** pass unchanged.
+
+  The three `callptr` sites were traced to their full function-pointer target
+  sets; no reachable target is pair-returning, which is the only way to rule that
+  class out — the compiler cannot see through an indirect call, so a clean build
+  is not evidence for it.
+
 ## [1.2.4] - 2026-08-23
 
 **A P-1 audit of the whole library. One finding is a remote-ish code execution in the completion
