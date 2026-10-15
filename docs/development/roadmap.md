@@ -64,11 +64,11 @@ unblocks. Every item is append-only on the frozen 1.0.0 surface.
     `--help=json`).
   - Per-verb flags in `cmdit_completions`, which needs them (ark).
 
-**Upstream (cyrius stdlib):** `args_init` reads `/proc/self/cmdline` once into a fixed
-2 MiB buffer, so a longer command line (ARG_MAX rises with `ulimit -s`) is cut. Since 1.3.2,
-cmdit fails closed with `CMDIT_ERR_ARGV` instead of parsing the prefix (audit SEC-7). The
-real fix is in the stdlib: read until EOF, growing the buffer. Every user of stdlib `args`
-has the truncation today.
+**Filed against cyrius:** stdlib `args_init` returns a prefix of a command line longer than
+2 MiB with no error (ARG_MAX rises with `ulimit -s`). That is
+cyrius `docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`, for cyrius to place and repair. Since 1.3.2, cmdit fails closed with
+`CMDIT_ERR_ARGV` instead of parsing the prefix (audit SEC-7). Revisit that check when cyrius
+closes the issue.
 
 **Not pinned:** negative-number positionals such as `hadara at -1000`;
 `cmdit_verb_trailing_after(h, v, 0)` already handles them, and 1.3.4 will cover the top level.

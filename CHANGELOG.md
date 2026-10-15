@@ -38,8 +38,8 @@ off the end. Verified on 1.3.1: 30 arguments of 100 KB then `--loud` gave exit 0
 `loud = 0`. With no `/proc` mounted, `argc()` is 0, and the tool ran ignoring every flag.
 
 Both now fail with **`CMDIT_ERR_ARGV` (13)**, "could not read the full command line", on the
-6.7.9 and 6.6.2 compilers alike. The root fix belongs in the stdlib (read until EOF), and the
-roadmap records it.
+6.7.9 and 6.6.2 compilers alike. The stdlib behaviour itself is filed against cyrius as
+cyrius `docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`.
 
 ### Fixed (memory, program misuse)
 

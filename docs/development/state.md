@@ -229,8 +229,8 @@ Open, in rough order:
   re-pin first: its marked `exec` gains flags-before-the-container, and `--` after it. Its
   completions take a literal name, so it was not exposed to the 1.3.2 security fix. The
   bundle compiles on pins as old as 6.6.2.
-- **Upstream:** stdlib `args_init` should read `/proc/self/cmdline` until EOF. cmdit fails
-  closed meanwhile (audit SEC-7).
+- **Filed against cyrius:** stdlib `args_init` returns a prefix of a command line over 2 MiB
+  with no error (cyrius `docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`). cmdit fails closed meanwhile (audit SEC-7).
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
   is a site-by-site map from that repo's CLI code to cmdit calls. shakti, kriya, cyim and
   bannermanor are blocked on cmdit gaps; klug is not worth migrating.
