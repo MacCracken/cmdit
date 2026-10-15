@@ -5,14 +5,15 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.3.1 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.3.2 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
-faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`). **1.2.4 is a
-security release** — the completion generator interpolated the program name, which on the
-`cmdit_new(0)` path comes from `argv[0]`, raw into the scripts it emits; it also closes
-three memory-safety/contract defects. No API change. **Consumers on any earlier version that
-generate completions should update.**
+faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`); 1.3.2 is an
+audit sweep with a completion-script security fix. **1.2.4 is a security release** — the
+completion generator interpolated the program name, which on the `cmdit_new(0)` path comes
+from `argv[0]`, raw into the scripts it emits; it also closes three memory-safety/contract
+defects. No API change. **Consumers on any earlier version that generate completions should
+update.**
 **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
@@ -36,7 +37,8 @@ codes) plus the three things every structured consumer copies by hand.
 - **The argv materialize bridge** — `cmdit_argv` turns `argc()/argv(i)` into one
   contiguous `cstr*` array (the boilerplate every structured consumer re-copied).
 - **Auto `--help`/`-h` + `--version`/`-V`** — registered for free; `cmdit_parse`
-  short-circuits to `CMDIT_HELP` / `CMDIT_VERSION`.
+  returns `CMDIT_HELP` / `CMDIT_VERSION` instead of `CMDIT_OK`. The whole argv is still
+  scanned first, so an error anywhere wins (`--help --bogus` is `CMDIT_ERR_UNKNOWN`).
 - **Generated help** — `cmdit_help` prints `Usage:` + the flag list from the table
   (kills hand-written-help drift); `cmdit_version` centralizes the version line.
 - **Standard errors + exit codes** — `cmdit_print_error` + `CMDIT_EXIT_OK/RUN/USAGE`
@@ -91,7 +93,20 @@ if (v == 0) {
 
 - **Globals before OR after the verb** resolve in one pass (the ark double-scan fix).
 - **`--help`/`--version` defer** past the verb — `tool add --help` shows the
-  subcommand's help; `tool --help` shows global help + the command list.
+  subcommand's help, even when a global flag is `cmdit_required` (1.3.2); `tool --help`
+  shows global help + the command list. `cmdit_help_short` / `cmdit_version_short` are per
+  handle, so remap them on each verb handle too.
+- **`--` before the verb** ends *global* flags only: `tool -- add --verbose` does not apply
+  `--verbose` as a global, and the verb scope parses it. After the verb, `--` reaches the
+  verb scope as its own terminator.
+- **`cmdit_verb_trailing_after(h, v, n)`** makes everything after the verb's first `n`
+  positionals a verbatim payload (`exec <container> <cmd>...`). Only positionals count
+  toward `n`, so verb flags and globals before them still parse (1.3.2), and a `--` right at
+  the threshold is consumed, kubectl-style (1.3.2).
+- **One-pass caveats:** a global value flag right before the verb can take the verb as its
+  value (`tool --config build install`), and a verb value flag whose separate value spells a
+  global flag gives the global (`tool add --name --verbose`). Write `--config=build` /
+  `--name=--verbose` to be unambiguous.
 - **Nested sub-verbs** are re-entry: dispatch a child handle on `cmdit_verb_argv(h)`.
 - **`cmdit_basename`** + `cmdit_raw_argv` give the argv[0] busybox multiplexer, caller-side.
 - **`cmdit_require_positionals(h, min)`** gates minimum positional count.
@@ -126,7 +141,9 @@ constants, not API (do not depend on their values).
   `cmdit_parse(h)` / `cmdit_parse_argv(h, argc, argv)` (pure), `cmdit_finalize(h)`,
   `cmdit_dispatch(h)` / `cmdit_dispatch_argv(h, argc, argv)` (pure). A handle is
   **single-parse**: build a fresh one per argv. A second parse on the same handle resets
-  only the error fields (1.2.4); positionals, flag values and the matched verb carry over.
+  only the error fields (1.2.4); positionals, flag values, the matched verb and a verb
+  handle's trailing-verbatim mark carry over. A 0 handle (`cmdit_new`'s OOM result) is safe
+  everywhere and reports `CMDIT_ERR_NOMEM` (1.3.2).
 - **Register:** `cmdit_bool` / `cmdit_int` / `cmdit_str` / `cmdit_enum` /
   `cmdit_repeat`; modifiers `cmdit_required` / `cmdit_range` / `cmdit_env` /
   `cmdit_metavar`; verbs `cmdit_verb` / `cmdit_verb_alias`; auto-flag config
@@ -136,7 +153,7 @@ constants, not API (do not depend on their values).
   `cmdit_positional_count`, `cmdit_verb_matched` / `cmdit_verb_argc` /
   `cmdit_verb_argv`, `cmdit_raw_argv` / `cmdit_raw_argc`, `cmdit_basename`.
 - **Validate / errors:** `cmdit_require_positionals` / `_max` / `_exact`,
-  `cmdit_error` (last `CmditErr`, `CMDIT_ERR_NONE` 0 … `CMDIT_ERR_NOMEM` 12),
+  `cmdit_error` (last `CmditErr`, `CMDIT_ERR_NONE` 0 … `CMDIT_ERR_ARGV` 13),
   `cmdit_err_flag` (offending flag index).
 - **Output:** `cmdit_help` (Usage + flag list) / `cmdit_help_flags` (table-only rows,
   for tools framing their own help) / `cmdit_verbs_help`, `cmdit_version`, `cmdit_print_error`.
@@ -217,6 +234,13 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   past 128 / 64, and a bool given `=value` is `CMDIT_ERR_UNEXPECTED_VALUE` (11) instead of
   turning the flag on. A refused growth is `CMDIT_ERR_NOMEM` (12). **400/400 tests**, every
   change mutation-proven.
+- **1.3.2** — **audit sweep + security**: a program name starting with `-` (attacker-chosen
+  `argv[0]`) was read as options by `complete` in the generated completion script; a command
+  line too long or impossible to read whole parsed as a silent prefix, now
+  `CMDIT_ERR_ARGV` (13). Plus slot-count wrap guards, 0-handle safety on every entry point,
+  immutable layout constants, the zsh/fish name whitelist, five verb-dispatch contract fixes,
+  and a ~3× faster verb-tool construction. **503/503 tests**, 33/33 repairs mutation-proven;
+  [audit report](docs/audit/2026-10-14-audit.md).
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -225,6 +249,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (400/400)
+cyrius test                                          # run tests/*.tcyr  (503/503)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

@@ -4,6 +4,113 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-14
+
+**An audit sweep, with one security fix.** It was the first full pass over `src/cmdit.cyr`
+since 1.2.4. Three independent finders worked alongside a manual read: memory safety and
+integers; contract and state; and the output and completion surface. Every claim was verified
+before it counted, and every behavioural finding was first written as a failing test. The full
+report is [`docs/audit/2026-10-14-audit.md`](docs/audit/2026-10-14-audit.md). **400 → 503
+assertions**, and **33/33** seeded reverts of the fixes are caught (two fixes are unprovable by
+any fixture and say so). The error taxonomy gains one append-only code, `CMDIT_ERR_ARGV = 13`.
+
+### Fixed (SECURITY) — a program name starting with `-` became options to `complete`
+
+1.2.4 sanitised the program name in generated completion scripts to `[A-Za-z0-9_.-]`, arguing
+`-` is not a metacharacter in command-word position. As the **first** byte of the name given to
+bash's `complete`, fish's `complete -c` or zsh's `#compdef`, it is read as options. On the
+documented `cmdit_new(0)` path, the name is the attacker-chosen `argv[0]`. Verified on 1.3.1:
+with `argv[0] = "-DCtrue"`, the script passed `bash -n`, and merely sourcing it replaced the
+user's **default** completion (`complete -p -D` → `complete -C 'true' … -D`). bash then runs
+that PATH command on every TAB for any command without its own completion.
+
+The payload is limited to one bare command name, weaker than the 1.2.4 bug, but it has the
+same attacker and the same sourced sink. A leading `-` is now mapped to `_` in all three
+emitters. No shipped consumer was exposed: only stiva generates completions, and it names
+itself with a literal.
+
+### Fixed (attacker-reachable) — a command line too long or impossible to read whole parsed as a prefix
+
+stdlib `args_init` reads `/proc/self/cmdline` once into a fixed 2 MiB buffer, and an
+unprivileged `ulimit -s unlimited` raises ARG_MAX past that. Every whole token past 2 MiB was
+dropped, and the parse returned `CMDIT_OK`: a wrapper's trailing `--read-only` can be padded
+off the end. Verified on 1.3.1: 30 arguments of 100 KB then `--loud` gave exit 0 and
+`loud = 0`. With no `/proc` mounted, `argc()` is 0, and the tool ran ignoring every flag.
+
+Both now fail with **`CMDIT_ERR_ARGV` (13)**, "could not read the full command line", on the
+6.7.9 and 6.6.2 compilers alike. The root fix belongs in the stdlib (read until EOF), and the
+roadmap records it.
+
+### Fixed (memory, program misuse)
+
+- **Slot counts past 2^60 wrapped their byte size** to a buffer `alloc` granted:
+  `cmdit_dispatch_argv` with `argc = 2^61` wrote past an 8-byte remainder, and growth at a
+  2^61 + 1 capacity copied out of 16 bytes. 1.3.1's NOMEM test passed by luck. One bound,
+  `_CMDIT_SLOTS_MAX`, now guards every slot-to-size conversion.
+- **The public `CMDIT_*_MAX` / `_SIZE` vars were read live**, so mutating one overflowed the
+  heap or hung a repeat push. The layout now lives in a private `enum CmditLayout` plus each
+  handle's stored caps, and the public vars are read-only in effect, the model stdlib 6.7.9
+  adopted for its own bound vars.
+- **`cmdit_verb_alias` accepted any id.** An alias of a missing verb read outside the verb
+  table when named on the command line. The target must now be a registered, canonical verb.
+- **A 0 handle crashed ~25 public entry points**, although 1.2.4's comment said every entry
+  point tolerated one. All are guarded now and fail closed: a 0 handle is `cmdit_new`'s OOM, so
+  the parse family returns `CMDIT_RESULT_ERR`, `cmdit_error(0)` is `CMDIT_ERR_NOMEM`, and
+  `cmdit_print_error(0)` says "out of memory".
+- **`_cmdit_repeat_cap` looped forever past 2^62.**
+
+### Fixed (contract)
+
+- **Verb dispatch:**
+  - A `cmdit_verb_trailing_after` verb counted its own flags as positionals, so in
+    `exec --tty --root /x c1 ls` the global `--root` fell into the payload. Only positionals
+    count now; a global inside the payload is still never applied.
+  - `tool add --help` was blocked by a required global flag (ctx grows 168 → 176 B for the
+    `help_deferred` mark).
+  - On a marked verb, `exec c1 -- ls` ran the command `--`. A `--` at the threshold is now
+    consumed, kubectl-style.
+  - `-vx` before the verb said UNKNOWN; it is BUNDLED, as in the parse core.
+  - Marking an alias row trailing silently did nothing; it now resolves to the verb.
+- **Completions:**
+  - zsh and fish now apply the 1.2.1 name whitelist, which only bash did. fish expands
+    `complete -a` arguments at TAB time.
+  - Short value flags are now in the skip set (`tool -j 5 <TAB>` took 5 for the verb).
+  - An empty program name falls back to `prog`.
+- **OOM:** the dispatcher's alloc failure now sets `CMDIT_ERR_NOMEM` (it set no code), and a
+  failed argv materialization no longer parses as an empty argv.
+- **Repeat flags:** a refused repeat push no longer overwrites the last-wins value.
+
+### Performance
+
+- **The verb table was still zeroed a byte at a time**, which 1.3.0 had fixed only for the
+  entry table. Handle + first verb: **8.36 → 2.83 µs (−66%)**, paid on every run of every verb
+  tool. A new `verb_new_floor` bench tracks it; every other bench is within ±2.5% of 1.3.1
+  (dispatch +2.4%, the new guards). See [`docs/benchmarks.md`](docs/benchmarks.md).
+- **argv is materialized once per process**, not once per handle. Each handle used to re-run
+  `args_init` and its never-freed 2 MiB buffer.
+
+### Docs
+
+- README: `cmdit_parse` does not "short-circuit" (the whole argv is scanned; an error anywhere
+  wins). New verb-dispatch notes: `--` before the verb ends global flags only, help-letter
+  remapping is per handle, and the one-pass caveats.
+- ADR-0002 gains "Later notes", covering the verb-row `+24` slot and the mirror ambiguity
+  (`tool add --name --verbose`).
+- Stale source comments are corrected (context layout, `FlagErr` compatibility, the
+  NOT-supported list). The roadmap pins the survey's open gaps to 1.3.3–1.3.7.
+
+### Consumers
+
+Re-pinning breaks none of the six. Two behaviours are newly rejected, and both were never
+meaningful:
+
+- `-vx` before a verb now reports BUNDLED instead of UNKNOWN;
+- a command line over 2 MiB now fails instead of being cut.
+
+kii and anuenue's `cmdit_error` switches print their generic line for the new
+`CMDIT_ERR_ARGV`. stiva's marked `exec` now accepts flags before the container, and consumes a
+`--` after it.
+
 ## [1.3.1] - 2026-10-14
 
 **Stdlib parity: two correctness defects that the parser cmdit was forked from fixed in

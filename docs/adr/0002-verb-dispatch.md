@@ -65,6 +65,18 @@ an in-core verb tree.**
   table if real demand ever appears; `CMDIT_VERB_MAX` is 128 because aliases
   consume rows.
 
+## Later notes
+
+- **1.2.2** — the verb-row `+24` slot, reserved above, holds `cmdit_verb_trailing_after`'s
+  threshold (`n + 1`, 0 = none). A sub-verb table would need a new slot.
+- **1.3.2** — the mirror of the "swallowed verb" ambiguity above: a *verb-scoped* value flag
+  whose separate value spells a registered *global* flag gives the global
+  (`tool add --name --verbose file` sets `--verbose`, and `--name` takes `file`). The
+  dispatcher cannot know a verb flag's arity, so this is inherent to the one-pass design;
+  `--name=--verbose` is unambiguous. Also in 1.3.2: only positionals count toward a
+  trailing-verbatim threshold, and `tool add --help` skips the global required check.
+  See the [2026-10-14 audit](../audit/2026-10-14-audit.md).
+
 ## Alternatives considered
 
 - **Handler fn-ptrs (`cmdit_dispatch` calls `verb->handler`).** Rejected: the

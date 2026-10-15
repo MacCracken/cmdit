@@ -5,6 +5,20 @@
 
 ## Version
 
+**1.3.2** — built 2026-10-14. **Audit sweep + one security fix**
+([`audit/2026-10-14-audit.md`](../audit/2026-10-14-audit.md)).
+
+- **Security:** a program name starting with `-` (attacker-chosen `argv[0]`) became options
+  to `complete` in generated completion scripts.
+- **Attacker-reachable:** a command line over 2 MiB, or unreadable, parsed as a silent
+  prefix; it is now `CMDIT_ERR_ARGV` (13).
+- **Memory, program misuse:** slot-count size wraps; public layout vars read live (now a
+  private enum); out-of-range aliases; 0-handle crashes on ~25 entry points.
+- **Contract:** five verb-dispatch fixes, and three in completions.
+- **Speed:** verb-tool construction 8.4 → 2.8 µs.
+
+**400 → 503 assertions**, 33/33 seeded reverts caught.
+
 **1.3.1** — built 2026-10-14. **Stdlib parity.** Positionals and repeat lists double on demand
 instead of silently dropping past 128 / 64, which reverses audit SEC-3. A bool given `=value`
 is `CMDIT_ERR_UNEXPECTED_VALUE` (11) instead of turning the flag on. A refused growth is
@@ -145,7 +159,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **400/400**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+- `tests/cmdit.tcyr` — **503/503**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
   `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
@@ -154,14 +168,15 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   missing-value, `CMDIT_FLAGS_MAX`/`CMDIT_VERB_MAX` cap returns, `cmdit_new(0)`
   argv[0] adoption, and the C5/C3/C1 groups (`help_short`/`version_short` remap+disable,
   metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
-- `tests/cmdit.bcyr` — **7 real benchmarks** (`cmdit_new` floor, register/parse
-  subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate);
+- `tests/cmdit.bcyr` — **8 real benchmarks** (`cmdit_new` floor, register/parse
+  subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate, and the
+  1.3.2 `verb_new_floor`);
   see [`benchmarks.md`](../benchmarks.md).
-- `tests/cmdit.fcyr` — **real fuzz harness** (1.3.0; it was a stub before). 16 seeds × 400
-  argvs through `cmdit_parse_argv` and `cmdit_dispatch_argv`, mixing a 48-token pool with
-  random bytes and checking six contract invariants (I1–I6 in its header). Since 1.3.1, every
-  50th argv is long (up to 400 tokens), so the growth paths past 128 / 64 are fuzzed too. Mutation-proven:
-  8 of 9 seeded source bugs caught. The survivor (the remainder slice's NULL terminator) is
+- `tests/cmdit.fcyr` — **real fuzz harness** (1.3.0; it was a stub before). 16 seeds × 400 argvs
+  through `cmdit_parse_argv` and `cmdit_dispatch_argv`, mixing a 48-token pool with random bytes
+  and checking six contract invariants (I1–I6 in its header). Since 1.3.1, every 50th argv is
+  long (up to 400 tokens), so the growth paths past 128 / 64 are fuzzed too. Mutation-proven: 8
+  of 9 seeded source bugs caught. The survivor (the remainder slice's NULL terminator) is
   unobservable because fresh `alloc` memory is already zero. ~0.7 s.
 - **Poison gates:** `cyrius fuzz --poison=ab` and `CYRIUS_POISON=1 cyrius test` both pass, so
   there is no redzone overwrite in cmdit. Neither can observe `cmdit_new`'s zeroing loop:
@@ -203,23 +218,26 @@ None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
 
 ## Next
 
-v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.1 closes the two
-stdlib-parity defects the adoption survey found.
+v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.2 was a full
+audit sweep; 1.3.3–1.3.7 are pinned to the adoption survey's remaining gaps.
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.3.1 are recommended.** They bring the two misparse fixes, the
-  ~9.5 µs `cmdit_new` saving, and the linear `cmdit_argv`. None of the six breaks. kii and
-  anuenue's `cmdit_error` switches would print their generic line for the new
-  `UNEXPECTED_VALUE`; a branch for it would name it. The bundle compiles on consumer pins as
-  old as 6.6.2.
+- **Consumer re-pins to 1.3.2 are recommended.** They bring the misparse fixes, the speed
+  work and the audit repairs. None of the six breaks. kii and anuenue's `cmdit_error`
+  switches print their generic line for the new `UNEXPECTED_VALUE` and `ARGV`. stiva should
+  re-pin first: its marked `exec` gains flags-before-the-container, and `--` after it. Its
+  completions take a literal name, so it was not exposed to the 1.3.2 security fix. The
+  bundle compiles on pins as old as 6.6.2.
+- **Upstream:** stdlib `args_init` should read `/proc/self/cmdline` until EOF. cmdit fails
+  closed meanwhile (audit SEC-7).
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
   is a site-by-site map from that repo's CLI code to cmdit calls. shakti, kriya, cyim and
   bannermanor are blocked on cmdit gaps; klug is not worth migrating.
-- **The survey's remaining gaps.** The two stdlib-parity defects shipped in 1.3.1. Next by
-  demand: an offending-token accessor (seven repos) and a top-level stop-at-positional. Those
-  two are all that still blocks shakti. Ranked list:
-  [`roadmap.md`](roadmap.md#gaps-found-by-the-adoption-survey-2026-10-14--open).
+- **Pinned for 1.3.x** ([`roadmap.md`](roadmap.md#pinned-for-13x)): 1.3.3 the
+  offending-token accessor, 1.3.4 stop-at-first-positional (together they unblock shakti),
+  1.3.5 fd-selectable help + hidden verbs, 1.3.6 small modifiers, 1.3.7 flag-table
+  introspection.
 - **The adoption notes record the 1.3.1 fixes.** bannermanor, klug, shakti, yo, kriya and cyim
   each got an appended "Update — cmdit 1.3.1" (2026-10-14). bannermanor is no longer blocked on
   cmdit; shakti is still blocked on the token accessor and stop-at-positional.

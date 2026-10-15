@@ -7,7 +7,7 @@
 # already exists but lives in the toolchain (can't grow enum/repeat/verb without
 # a cyrius release) and ~31 repos never adopted it. cmdit is `flags.cyr`
 # *productized as a standalone distlib + extended*: the proven getopt-long core
-# (forked from lib/flags.cyr, byte-compatible type/err codes) PLUS the three
+# (forked from lib/flags.cyr; types and error codes 0..4 byte-compatible) PLUS the three
 # things every structured consumer copies by hand — the argc/argv -> contiguous
 # cstr* materialize bridge, auto `--help`/`--version`, and the 0/1/2 exit
 # convention as named constants. 0.1.0 = the faithful extraction; enum / repeat /
@@ -35,7 +35,8 @@
 #
 # Supported syntax (0.1.0):
 #   --name              bool flag -> 1
-#   --name=value        long with attached value
+#   --name=value        long with attached value (a bool given =value is an
+#                       error, CMDIT_ERR_UNEXPECTED_VALUE, 1.3.1)
 #   --name value        long with space-separated value
 #   -x                  short bool flag -> 1
 #   -x value            short with space-separated value (int/str)
@@ -58,7 +59,8 @@
 #
 # NOT supported (deferred to the v2 backlog — docs/development/roadmap.md and
 # docs/adr/0003-v1-freeze.md): bundled short bools -xyz, attached short value
-# -xvalue, --no-foo negation, count -vvv. Out of cmdit scope: dynamic/large enum
+# -xvalue or -x=value, optional-value flags, float flags, --no-foo negation,
+# count -vvv. Out of cmdit scope: dynamic/large enum
 # lists, cross-field/modulo ranges, pure-env cascades with no associated flag,
 # in-core nested-verb trees (use re-entry), interactive/REPL command DSLs.
 #
@@ -90,6 +92,7 @@ enum CmditErr {
     CMDIT_ERR_TOO_MANY_POSITIONAL = 10; # 1.0.0: cmdit_require_positionals_max/_exact upper bound exceeded
     CMDIT_ERR_UNEXPECTED_VALUE = 11;  # 1.3.1: a bool flag given `--flag=value` (stdlib's code 5, 6.6.5)
     CMDIT_ERR_NOMEM = 12;             # 1.3.1: a positional or repeat list could not grow (stdlib's 6, 6.6.7)
+    CMDIT_ERR_ARGV = 13;              # 1.3.2: the process command line could not be read in full
 }
 
 # Parse result codes (return of cmdit_parse / cmdit_parse_argv).
@@ -104,13 +107,36 @@ var CMDIT_EXIT_OK = 0;       # success (incl. help / version)
 var CMDIT_EXIT_RUN = 1;      # runtime failure
 var CMDIT_EXIT_USAGE = 2;    # usage / parse error
 
-var CMDIT_FLAGS_MAX = 64;    # raised from flags.cyr's 32 — attn11 has ~35 flags
-var CMDIT_POS_MAX = 128;     # INITIAL positional capacity; 1.3.1: the array doubles, never drops
-var CMDIT_CTX_SIZE = 168;    # 1.2.2: +160 trailing_verbatim (0.3.0 added +104..+152 verb dispatch state; was 104)
-var CMDIT_ENTRY_SIZE = 112;  # 1.0.0: grown 104 -> 112 (metavar at +104), append-only (old offsets unchanged)
-var CMDIT_REPEAT_MAX = 64;   # INITIAL per-flag repeat-list capacity; 1.3.1: doubles, never drops
-var CMDIT_VERB_MAX = 128;    # 0.3.0: verb table cap (sit has 25 verbs; aliases are extra rows)
-var CMDIT_VERB_SIZE = 32;    # 0.3.0: verb-row stride (+0 name +8 help +16 canonical_id +24 trailing_after)
+# Layout and capacity constants. 1.3.2: the code sizes storage ONLY from these
+# (an enum, so a program cannot assign them) and from the caps each handle
+# stores. The public CMDIT_*_MAX / _SIZE vars below were read live before 1.3.2,
+# so raising one after a table was allocated overflowed the heap, and setting
+# CMDIT_REPEAT_MAX to 0 hung the next repeat push. They keep their values for
+# readers and are now read-only in effect, the model stdlib 6.7.9 adopted for
+# its own public bound vars. CHANGELOG [1.3.2].
+enum CmditLayout {
+    _CMDIT_FLAGS_CAP = 64;      # raised from flags.cyr's 32 — attn11 has ~35 flags
+    _CMDIT_POS_INIT = 128;      # initial positional capacity; doubles (1.3.1)
+    _CMDIT_CTX_SZ = 176;        # 1.3.2: +168 help_deferred (1.2.2: +160 trailing_verbatim)
+    _CMDIT_ENTRY_SZ = 112;      # 1.0.0: grown 104 -> 112 (metavar at +104), append-only
+    _CMDIT_REPEAT_INIT = 64;    # initial per-flag repeat-list capacity; doubles (1.3.1)
+    _CMDIT_VERB_CAP = 128;      # verb table rows (sit has 25 verbs; aliases are extra rows)
+    _CMDIT_VERB_SZ = 32;        # verb-row stride (+0 name +8 help +16 canonical_id +24 trailing_after)
+    # The most pointer slots whose byte size (slots * 8) cannot wrap an i64, 2^60 - 1.
+    # Every slot count that becomes an alloc size is checked against it: past it,
+    # `n * 8` wraps, and it can wrap to a SMALL POSITIVE size (2^61 + 1 slots is 8
+    # bytes) that alloc happily grants and the caller then writes past (1.3.2).
+    _CMDIT_SLOTS_MAX = 1152921504606846975;
+}
+
+# Informational copies of the layout above (internal, not API — ADR-0003).
+var CMDIT_FLAGS_MAX = 64;
+var CMDIT_POS_MAX = 128;     # INITIAL positional capacity; the array doubles, never drops
+var CMDIT_CTX_SIZE = 176;
+var CMDIT_ENTRY_SIZE = 112;
+var CMDIT_REPEAT_MAX = 64;   # INITIAL per-flag repeat-list capacity; doubles, never drops
+var CMDIT_VERB_MAX = 128;
+var CMDIT_VERB_SIZE = 32;
 
 # Per-entry attribute bitfield (entry +48). Append-only; the byte-compatible
 # 0.1.0 type/offset layout (+0..+40) is untouched, so CMDIT_BOOL/INT/STR stay {0,1,2}.
@@ -119,12 +145,12 @@ var CMDIT_ATTR_SEEN = 2;       # set by CLI parse or env fallback when a value w
 var CMDIT_ATTR_RANGE = 4;      # cmdit_range — min/max valid at +72/+80
 var CMDIT_ATTR_REPEAT = 8;     # cmdit_repeat — list at +88, count at +96
 
-# Context layout (160 B):
-#   +0  entries_ptr      : i64 array of CMDIT_ENTRY_SIZE entries
-#   +8  entries_cap      : i64 (= CMDIT_FLAGS_MAX)
+# Context layout (176 B):
+#   +0  entries_ptr      : i64 array of _CMDIT_ENTRY_SZ entries
+#   +8  entries_cap      : i64 (= _CMDIT_FLAGS_CAP)
 #  +16  entries_count    : i64
 #  +24  positional_ptr   : i64 array of cstr ptrs (argv-style)
-#  +32  positional_cap   : i64 (starts at CMDIT_POS_MAX; doubles as needed, 1.3.1)
+#  +32  positional_cap   : i64 (starts at _CMDIT_POS_INIT; doubles as needed, 1.3.1)
 #  +40  positional_count : i64
 #  +48  prog_name        : i64 (cstr; caller-supplied for clean usage lines)
 #  +56  last_error       : i64 (CmditErr)
@@ -133,16 +159,19 @@ var CMDIT_ATTR_REPEAT = 8;     # cmdit_repeat — list at +88, count at +96
 #  +80  help_idx         : i64 (auto-registered --help/-h flag index)
 #  +88  version_idx      : i64 (auto-registered --version/-V flag index)
 #  +96  err_entry        : i64 (0.2.0; entry ptr that produced last_error, 0 = none/UNKNOWN)
-#  +104 verbs_ptr        : i64 (0.3.0; CMDIT_VERB_SIZE-row table, 0 until first cmdit_verb — lazy)
-#  +112 verbs_cap        : i64 (= CMDIT_VERB_MAX once allocated)
+#  +104 verbs_ptr        : i64 (0.3.0; _CMDIT_VERB_SZ-row table, 0 until first cmdit_verb — lazy)
+#  +112 verbs_cap        : i64 (= _CMDIT_VERB_CAP once allocated)
 #  +120 verbs_count      : i64
 #  +128 verb_matched     : i64 (canonical id of the dispatched verb, -1 = none)
 #  +136 verb_argv        : i64 (compacted remainder cstr*; argv[0]=verb name; 0 = none)
 #  +144 verb_argc        : i64
 #  +152 err_verb         : i64 (cstr; offending token for CMDIT_ERR_UNKNOWN_VERB, 0 = none)
+#  +160 trailing_verbatim: i64 (1.2.2; a verb handle's threshold as n + 1, 0 = off)
+#  +168 help_deferred    : i64 (1.3.2; 1 when dispatch handed an auto --help/--version to
+#                               the verb, so finalize skips the required check)
 #
 # Verb row (32 B): +0 name (cstr)  +8 help (cstr)  +16 canonical_id (own index for a
-#   real verb, target index for an alias row)  +24 reserved (future sub-verb table)
+#   real verb, target index for an alias row)  +24 trailing_after (1.2.2; n + 1, 0 = none)
 #
 # Entry layout (112 B). +0..+40 are byte-compatible with flags.cyr; +48..+96 are
 # the append-only 0.2.0 modifier fields; +104 is the 1.0.0 metavar:
@@ -152,9 +181,10 @@ var CMDIT_ATTR_REPEAT = 8;     # cmdit_repeat — list at +88, count at +96
 # +104 metavar (cstr; 0 = default <int>/<str>/<choices> help placeholder)
 
 fn _cmdit_add(h, short_ch, long_name, type, default_val, help): i64 {
+    if (h == 0) { return 0 - 1; }                                 # 1.3.2: see _cmdit_h0
     var count = load64(h + 16);
-    if (count >= CMDIT_FLAGS_MAX) { return 0 - 1; }
-    var ep = load64(h) + count * CMDIT_ENTRY_SIZE;
+    if (count >= load64(h + 8)) { return 0 - 1; }                # the handle's own cap (1.3.2)
+    var ep = load64(h) + count * _CMDIT_ENTRY_SZ;
     store64(ep, short_ch);
     store64(ep + 8, long_name);
     store64(ep + 16, type);
@@ -266,13 +296,19 @@ fn cmdit_metavar(h, idx, name): i64 {
 # every cmdit tool gets them for free. `prog_name` is the clean name printed in
 # usage/version lines (pass 0 to fall back to argv[0] at parse).
 fn cmdit_new(prog_name): i64 {
-    var h = alloc(CMDIT_CTX_SIZE);
-    var entries = alloc(CMDIT_FLAGS_MAX * CMDIT_ENTRY_SIZE);
-    var positional = alloc(CMDIT_POS_MAX * 8);
+    var h = alloc(_CMDIT_CTX_SZ);
+    var entries = alloc(_CMDIT_FLAGS_CAP * _CMDIT_ENTRY_SZ);
+    var positional = alloc(_CMDIT_POS_INIT * 8);
     # 1.2.4: stdlib alloc returns 0 on failure (OOM, or a size outside
     # (0, ALLOC_MAX]) — it does not abort. Unchecked, the memzero loop below
-    # wrote 7168 bytes from address 0. Returns 0 so the caller can bail; every
-    # public entry point tolerates a 0 handle. CHANGELOG [1.2.4].
+    # wrote 7168 bytes from address 0. Returns 0 so the caller can bail.
+    #
+    # _cmdit_h0 — 1.3.2: every public entry point now tolerates a 0 handle, which
+    # 1.2.4 claimed here but only the getters and modifiers honoured. Registration
+    # returns -1, the parse family returns CMDIT_RESULT_ERR, cmdit_error(0) is
+    # CMDIT_ERR_NOMEM, and cmdit_print_error(0) says "out of memory". So a caller
+    # that never checks this return still fails closed with the right message,
+    # instead of crashing in the first cmdit_bool. CHANGELOG [1.3.2].
     # ⚠ NOT covered by a failing test, and deliberately recorded as such: the
     # three sizes here are compile-time constants well inside ALLOC_MAX, so no
     # public API call can drive alloc to return 0. Deleting this line keeps the
@@ -284,15 +320,15 @@ fn cmdit_new(prog_name): i64 {
     # size ever stops being a multiple of 8. Not observable by a test: alloc's
     # memory is already zero (poison mode fills only the redzones), so this is
     # defence-in-depth, like the alloc check above. CHANGELOG [1.3.0].
-    var zn = CMDIT_FLAGS_MAX * CMDIT_ENTRY_SIZE;
+    var zn = _CMDIT_FLAGS_CAP * _CMDIT_ENTRY_SZ;
     var i = 0;
     while (i + 8 <= zn) { store64(entries + i, 0); i = i + 8; }
     while (i < zn) { store8(entries + i, 0); i = i + 1; }
     store64(h, entries);
-    store64(h + 8, CMDIT_FLAGS_MAX);
+    store64(h + 8, _CMDIT_FLAGS_CAP);
     store64(h + 16, 0);
     store64(h + 24, positional);
-    store64(h + 32, CMDIT_POS_MAX);
+    store64(h + 32, _CMDIT_POS_INIT);
     store64(h + 40, 0);
     store64(h + 48, prog_name);
     store64(h + 56, CMDIT_ERR_NONE);
@@ -307,12 +343,13 @@ fn cmdit_new(prog_name): i64 {
     store64(h + 144, 0);                                                         # verb_argc
     store64(h + 152, 0);                                                         # err_verb
     store64(h + 160, 0);                                                         # trailing_verbatim (1.2.2; 0 = off)
+    store64(h + 168, 0);                                                         # help_deferred (1.3.2)
     store64(h + 80, cmdit_bool(h, 104, "help", "show this help and exit"));      # 'h'
     store64(h + 88, cmdit_bool(h, 86, "version", "print version and exit"));     # 'V'
     return h;
 }
 
-fn _cmdit_entry(h, idx): i64 { return load64(h) + idx * CMDIT_ENTRY_SIZE; }
+fn _cmdit_entry(h, idx): i64 { return load64(h) + idx * _CMDIT_ENTRY_SZ; }
 
 # Remap or disable the auto -h / -V short letters (the long --help/--version and
 # help/version detection are unaffected — only the single-char alias changes).
@@ -408,17 +445,25 @@ fn cmdit_repeat_get(h, idx, i): i64 {
 }
 
 # Positional (non-flag) args in argv order, including everything after `--`.
-fn cmdit_positional_count(h): i64 { return load64(h + 40); }
+fn cmdit_positional_count(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
+    return load64(h + 40);
+}
 # The idx-th positional (cstr, an interior pointer into argv), or 0 when idx is
 # outside [0, cmdit_positional_count).
 fn cmdit_positional(h, idx): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
     if (idx < 0) { return 0; }
     if (idx >= load64(h + 40)) { return 0; }
     return load64(load64(h + 24) + idx * 8);
 }
 
-# Last parse error (CmditErr). Checked after a CMDIT_RESULT_ERR return.
-fn cmdit_error(h): i64 { return load64(h + 56); }
+# Last parse error (CmditErr). Checked after a CMDIT_RESULT_ERR return. A 0 handle
+# reports CMDIT_ERR_NOMEM: cmdit_new returns 0 only when alloc refused (1.3.2).
+fn cmdit_error(h): i64 {
+    if (h == 0) { return CMDIT_ERR_NOMEM; }
+    return load64(h + 56);
+}
 
 # Index of the flag that produced the last error (for consumer-rendered messages),
 # or -1 if none / the error names no registered flag (UNKNOWN / BUNDLED /
@@ -426,9 +471,10 @@ fn cmdit_error(h): i64 { return load64(h + 56); }
 # repeat-list NOMEM name their flag (1.3.1). The same flag cmdit_print_error
 # names. Matches the registration index from cmdit_*.
 fn cmdit_err_flag(h): i64 {
+    if (h == 0) { return 0 - 1; }                                 # 1.3.2: see _cmdit_h0
     var ep = load64(h + 96);
     if (ep == 0) { return 0 - 1; }
-    return (ep - load64(h)) / CMDIT_ENTRY_SIZE;
+    return (ep - load64(h)) / _CMDIT_ENTRY_SZ;
 }
 
 # Verb dispatch accessors (0.3.0). cmdit_verb_matched is the identify-and-return
@@ -437,19 +483,34 @@ fn cmdit_err_flag(h): i64 {
 # CMDIT_RESULT_ERR / UNKNOWN_VERB, where a token matched nothing). verb_argc/argv
 # are the globals-removed remainder slice (argv[0] = verb name) to feed a child
 # handle's cmdit_parse_argv (also how nested sub-verbs work — re-enter on it).
-fn cmdit_verb_matched(h): i64 { return load64(h + 128); }
+fn cmdit_verb_matched(h): i64 {
+    if (h == 0) { return 0 - 1; }                                 # 1.3.2: see _cmdit_h0
+    return load64(h + 128);
+}
 # Token count of the remainder slice (>= 1 once a verb matched: argv[0] is the
 # verb name). Feed it, with cmdit_verb_argv, to the child handle's parse.
-fn cmdit_verb_argc(h): i64 { return load64(h + 144); }
+fn cmdit_verb_argc(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
+    return load64(h + 144);
+}
 # The remainder slice itself: a NULL-terminated cstr* array whose [0] is the
 # matched verb name, shaped like a real argv so cmdit_parse_argv accepts it.
-fn cmdit_verb_argv(h): i64 { return load64(h + 136); }
+fn cmdit_verb_argv(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
+    return load64(h + 136);
+}
 
 # Escape hatch: the materialized argv array + count, for non-getopt grammars
 # (e.g. dig's @server / +opt) that hand-tokenize but still want help/version.
-fn cmdit_raw_argv(h): i64 { return load64(h + 64); }
+fn cmdit_raw_argv(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
+    return load64(h + 64);
+}
 # Token count of that array (0 until cmdit_argv has materialized it).
-fn cmdit_raw_argc(h): i64 { return load64(h + 72); }
+fn cmdit_raw_argc(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
+    return load64(h + 72);
+}
 
 # --- parser internals (forked from flags.cyr, byte-compatible) ---------------
 
@@ -554,6 +615,8 @@ fn _cmdit_enum_index(choices, value): i64 {
 # Copy the first `n` pointer slots of `old` into a fresh array of `newcap` slots.
 # Returns the new array, or 0 if alloc refused (OOM, or a size past ALLOC_MAX).
 fn _cmdit_grow(old, n, newcap): i64 {
+    if (newcap < n) { return 0; }                                 # 1.3.2: also catches a wrapped (negative) cap
+    if (newcap > _CMDIT_SLOTS_MAX) { return 0; }                  # 1.3.2: newcap * 8 would wrap
     var grown = alloc(newcap * 8);
     if (grown == 0) { return 0; }
     var i = 0;
@@ -564,24 +627,29 @@ fn _cmdit_grow(old, n, newcap): i64 {
 # A repeat list's capacity, derived from its count: CMDIT_REPEAT_MAX, doubled
 # until it covers `c`. Derived rather than stored, so the 112 B entry is unchanged.
 fn _cmdit_repeat_cap(c): i64 {
-    var cap = CMDIT_REPEAT_MAX;
-    while (cap < c) { cap = cap * 2; }
+    var cap = _CMDIT_REPEAT_INIT;
+    while (cap < c) {
+        # 1.3.2: past 2^62 another doubling wraps negative, then to 0, and the loop
+        # never ends. Return c itself: the caller's grow to c * 2 then overflows,
+        # alloc refuses it, and the push fails with NOMEM. Unreachable from argv.
+        if (cap > 4611686018427387903) { return c; }
+        cap = cap * 2;
+    }
     return cap;
 }
 
-# Append a value to a repeat flag's per-entry list (alloc'd lazily). The value is
-# also written to +24 so cmdit_get_str yields a last-wins scalar view.
+# Append a value to a repeat flag's per-entry list (alloc'd lazily). On success the
+# value is also written to +24 so cmdit_get_str yields a last-wins scalar view.
 #
 # 1.3.1: the list GROWS (doubling) instead of silently dropping occurrences past
 # CMDIT_REPEAT_MAX = 64, and a refused alloc is CMDIT_ERR_NOMEM instead of a
 # silent drop. The stdlib parser cmdit was forked from made the same change in
 # 6.6.5 / 6.6.7. CHANGELOG [1.3.1].
 fn _cmdit_repeat_push(ep, value_ptr): i64 {
-    store64(ep + 24, value_ptr);
     var list = load64(ep + 88);
     var c = load64(ep + 96);
     if (list == 0) {
-        list = alloc(CMDIT_REPEAT_MAX * 8);
+        list = alloc(_CMDIT_REPEAT_INIT * 8);
         if (list == 0) { return CMDIT_ERR_NOMEM; }
         store64(ep + 88, list);
     }
@@ -593,6 +661,9 @@ fn _cmdit_repeat_push(ep, value_ptr): i64 {
     }
     store64(list + c * 8, value_ptr);
     store64(ep + 96, c + 1);
+    # 1.3.2: the last-wins view is set only once the push succeeded, so a refused
+    # list alloc leaves the flag as it was, as an env fallback must. CHANGELOG [1.3.2].
+    store64(ep + 24, value_ptr);
     return CMDIT_ERR_NONE;
 }
 
@@ -659,6 +730,7 @@ fn _cmdit_push_positional(h, tok): i64 {
 # drive synthetic argv. Returns CMDIT_OK / CMDIT_HELP / CMDIT_VERSION /
 # CMDIT_RESULT_ERR (cmdit_error reports which on the last).
 fn cmdit_parse_argv(h, argc, argv): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     # 1.2.4: reset the per-parse error trio. Without this a handle parsed a
     # second time carried the FIRST parse's err_entry, and cmdit_print_error /
     # cmdit_err_flag name a flag from an error that has nothing to do with the
@@ -670,14 +742,21 @@ fn cmdit_parse_argv(h, argc, argv): i64 {
     var i = 1;
     var in_positional = 0;
     # 1.2.2: trailing-verbatim, propagated from the dispatcher by
-    # cmdit_parse_verb. -1 = off. Once this many positionals have been pushed,
+    # cmdit_parse_verb as n + 1; 0 = off. Once n positionals have been pushed,
     # every remaining token is a positional whatever it looks like.
     var trail = load64(h + 160);
     while (i < argc) {
         var tok = load64(argv + i * 8);
         if (tok == 0) { i = i + 1; continue; }
-        if (trail > 0) {
-            if (cmdit_positional_count(h) >= trail - 1) { in_positional = 1; }
+        if (trail > 0 && in_positional == 0) {
+            if (cmdit_positional_count(h) >= trail - 1) {
+                in_positional = 1;
+                # 1.3.2: a `--` exactly at the threshold separates, kubectl-style,
+                # and is consumed. Before, `exec c1 -- ls -l` (1.2.2's documented
+                # escape hatch) ran the command `--` once exec was marked. A second
+                # `--` is data. CHANGELOG [1.3.2].
+                if (load8(tok) == 45 && load8(tok + 1) == 45 && load8(tok + 2) == 0) { i = i + 1; continue; }
+            }
         }
         var as_pos = in_positional;
         if (load8(tok) != 45 || load8(tok + 1) == 0) { as_pos = 1; }   # a non-flag, or a lone "-"
@@ -753,16 +832,38 @@ fn _cmdit_split_flat(base, n, out): i64 {
     return n;
 }
 
-# Materialize argc()/argv(i) into a contiguous, NULL-terminated cstr* array once,
-# cached on the ctx. Absorbs the build_argv_array / _materialize_argv boilerplate
-# every structured consumer copies. Calls args_init() once (guarded). Needs
-# stdlib "args".
-fn cmdit_argv(h): i64 {
-    if (load64(h + 64) != 0) { return load64(h + 72); }
+# The process argv, materialized once per PROCESS and shared by every handle
+# (1.3.2: it was once per handle, and each repeat re-ran args_init and its 2 MiB
+# buffer). 0 until the first successful _cmdit_argv_load.
+var _cmdit_argv_arr = 0;
+var _cmdit_argv_n = 0;
+
+# 1 when a read of `n` arguments from a `len`-byte buffer can be trusted whole.
+# Pure, so the suite can drive it. n <= 0: no argv[0], which a real exec never
+# lacks (Linux >= 5.18 supplies an empty one), so the command line could not be
+# read (no /proc mounted, or args_init's alloc failed). len >= 2 MiB: stdlib
+# args_init reads /proc/self/cmdline ONCE into a fixed 2 MiB buffer, but ARG_MAX
+# rises with `ulimit -s`, so a longer command line is cut at 2 MiB, and every
+# whole token past the cut vanishes. Pass len 0 where it is not known.
+fn _cmdit_argv_whole(n, len): i64 {
+    if (n <= 0) { return 0; }
+    if (len >= 2097152) { return 0; }
+    return 1;
+}
+
+# Read the process argv into _cmdit_argv_arr / _n. Returns CMDIT_ERR_NONE, or the
+# error code that explains why not (nothing is cached on failure).
+fn _cmdit_argv_load(): i64 {
     args_init();
     var n = argc();
+    var len = 0;
+    #ifdef CYRIUS_TARGET_LINUX
+    len = _args_len;
+    #endif
+    if (_cmdit_argv_whole(n, len) == 0) { return CMDIT_ERR_ARGV; }
+    if (n >= _CMDIT_SLOTS_MAX) { return CMDIT_ERR_NOMEM; }       # (n + 1) * 8 must not wrap
     var arr = alloc((n + 1) * 8);
-    if (arr == 0) { return 0; }                                  # 1.2.4: OOM -> no argv, not a null write
+    if (arr == 0) { return CMDIT_ERR_NOMEM; }                     # 1.2.4: OOM -> no argv, not a null write
     # 1.3.0: on Linux stdlib argv(i) re-walks /proc/self/cmdline from byte 0 on
     # every call, so asking for each index in turn was quadratic: 20,000
     # arguments cost ~2.6 s before parsing began. The arguments sit end to end in
@@ -770,16 +871,35 @@ fn cmdit_argv(h): i64 {
     # reads a pointer table (already O(1)) whose strings need not be adjacent.
     # CHANGELOG [1.3.0].
     #ifdef CYRIUS_TARGET_LINUX
-    if (n > 0) { _cmdit_split_flat(argv(0), n, arr); }
+    _cmdit_split_flat(argv(0), n, arr);
     #endif
     #ifndef CYRIUS_TARGET_LINUX
     var i = 0;
     while (i < n) { store64(arr + i * 8, argv(i)); i = i + 1; }
     #endif
     store64(arr + n * 8, 0);             # NULL terminator (execve-passthrough safe)
-    store64(h + 64, arr);
-    store64(h + 72, n);
-    return n;
+    _cmdit_argv_arr = arr;
+    _cmdit_argv_n = n;
+    return CMDIT_ERR_NONE;
+}
+
+# Materialize argc()/argv(i) into a contiguous, NULL-terminated cstr* array and
+# cache it on the handle. Absorbs the build_argv_array / _materialize_argv
+# boilerplate every structured consumer copies. Needs stdlib "args". Returns the
+# count. On failure returns 0, stores no array, and sets cmdit_error:
+# CMDIT_ERR_ARGV when the command line could not be read in full, CMDIT_ERR_NOMEM
+# when the array could not be allocated (1.3.2; before, both parsed as an EMPTY
+# argv and the tool ran ignoring every flag it was given). CHANGELOG [1.3.2].
+fn cmdit_argv(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
+    if (load64(h + 64) != 0) { return load64(h + 72); }
+    if (_cmdit_argv_arr == 0) {
+        var e = _cmdit_argv_load();
+        if (e != CMDIT_ERR_NONE) { store64(h + 56, e); return 0; }
+    }
+    store64(h + 64, _cmdit_argv_arr);
+    store64(h + 72, _cmdit_argv_n);
+    return _cmdit_argv_n;
 }
 
 # --- 0.2.0 finalize: env fallback + required check (the impure post-stage) ---
@@ -837,8 +957,16 @@ fn _cmdit_check_required(h): i64 {
 # then the required check. Returns CMDIT_OK or CMDIT_RESULT_ERR (cmdit_error =
 # REQUIRED_MISSING). Call only on a CMDIT_OK parse (help/version short-circuit
 # before this). Idempotent enough for one finalize per parse.
+#
+# 1.3.2: after a dispatch that handed `--help` / `--version` to the verb
+# (`tool add --help`), the required check is skipped: the user asked for help,
+# and a missing required global turned that into "required flag missing", against
+# README's promise that `tool add --help` shows the subcommand's help. The env
+# fallback still runs. CHANGELOG [1.3.2].
 fn cmdit_finalize(h): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     _cmdit_apply_env(h);
+    if (load64(h + 168) == 1) { return CMDIT_OK; }
     var rq = _cmdit_check_required(h);
     if (rq != CMDIT_ERR_NONE) { store64(h + 56, rq); return CMDIT_RESULT_ERR; }
     return CMDIT_OK;
@@ -848,7 +976,9 @@ fn cmdit_finalize(h): i64 {
 # required). The form most single-tool consumers call. help/version/parse-error
 # results propagate untouched — finalize runs only on a clean CMDIT_OK parse.
 fn cmdit_parse(h): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     var n = cmdit_argv(h);
+    if (load64(h + 64) == 0) { return CMDIT_RESULT_ERR; }         # 1.3.2: cmdit_argv set ARGV / NOMEM
     var r = cmdit_parse_argv(h, n, load64(h + 64));
     if (r != CMDIT_OK) { return r; }
     return cmdit_finalize(h);
@@ -859,6 +989,7 @@ fn cmdit_parse(h): i64 {
 # Deferred from 0.2.0, shipped in 0.3.0 (CHANGELOG [0.3.0]);
 # subsumes cyim's `if (r_npos < 3)` guards. Call after parse/dispatch.
 fn cmdit_require_positionals(h, min): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     if (load64(h + 40) >= min) { return CMDIT_OK; }
     store64(h + 56, CMDIT_ERR_MISSING_POSITIONAL);
     store64(h + 96, 0);
@@ -868,6 +999,7 @@ fn cmdit_require_positionals(h, min): i64 {
 # Require AT MOST `max` positionals; count > max -> CMDIT_ERR_TOO_MANY_POSITIONAL.
 # The upper-bound mirror of cmdit_require_positionals (top-level or any verb handle).
 fn cmdit_require_positionals_max(h, max): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     if (load64(h + 40) <= max) { return CMDIT_OK; }
     store64(h + 56, CMDIT_ERR_TOO_MANY_POSITIONAL);
     store64(h + 96, 0);
@@ -877,6 +1009,7 @@ fn cmdit_require_positionals_max(h, max): i64 {
 # Require EXACTLY `n` positionals: fewer -> CMDIT_ERR_MISSING_POSITIONAL, more ->
 # CMDIT_ERR_TOO_MANY_POSITIONAL (the both-bounds gate, argparse nargs=N).
 fn cmdit_require_positionals_exact(h, n): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     var c = load64(h + 40);
     if (c < n) { store64(h + 56, CMDIT_ERR_MISSING_POSITIONAL); store64(h + 96, 0); return CMDIT_RESULT_ERR; }
     if (c > n) { store64(h + 56, CMDIT_ERR_TOO_MANY_POSITIONAL); store64(h + 96, 0); return CMDIT_RESULT_ERR; }
@@ -891,7 +1024,7 @@ fn cmdit_require_positionals_exact(h, n): i64 {
 # sibling. Nested sub-verbs are re-entry on the remainder; the argv[0]
 # multiplexer is cmdit_basename + the raw-argv escape, caller-side.
 
-fn _cmdit_verb_row(h, i): i64 { return load64(h + 104) + i * CMDIT_VERB_SIZE; }
+fn _cmdit_verb_row(h, i): i64 { return load64(h + 104) + i * _CMDIT_VERB_SZ; }
 
 # Whole-cstr equality (both NUL-terminated).
 fn _cmdit_cstr_eq(a, b): i64 {
@@ -908,19 +1041,25 @@ fn _cmdit_cstr_eq(a, b): i64 {
 # canonical < 0 means "self" (a real verb -> canonical = own index). Returns the
 # new row index, or -1 if the table is full.
 fn _cmdit_verb_add(h, name, help, canonical): i64 {
+    if (h == 0) { return 0 - 1; }                                 # 1.3.2: see _cmdit_h0
     var vp = load64(h + 104);
     if (vp == 0) {
-        vp = alloc(CMDIT_VERB_MAX * CMDIT_VERB_SIZE);
+        vp = alloc(_CMDIT_VERB_CAP * _CMDIT_VERB_SZ);
         if (vp == 0) { return 0 - 1; }                            # 1.2.4: OOM -> "table full", not a null memzero
+        # 1.3.2: word-at-a-time, as cmdit_new's entry table has been since 1.3.0. The
+        # 4096-byte byte loop cost ~7 µs on the first cmdit_verb of every verb tool;
+        # the 1.3.0 change missed this second copy of it. CHANGELOG [1.3.2].
+        var zn = _CMDIT_VERB_CAP * _CMDIT_VERB_SZ;
         var z = 0;
-        while (z < CMDIT_VERB_MAX * CMDIT_VERB_SIZE) { store8(vp + z, 0); z = z + 1; }
+        while (z + 8 <= zn) { store64(vp + z, 0); z = z + 8; }
+        while (z < zn) { store8(vp + z, 0); z = z + 1; }
         store64(h + 104, vp);
-        store64(h + 112, CMDIT_VERB_MAX);
+        store64(h + 112, _CMDIT_VERB_CAP);
         store64(h + 120, 0);
     }
     var count = load64(h + 120);
-    if (count >= CMDIT_VERB_MAX) { return 0 - 1; }
-    var row = vp + count * CMDIT_VERB_SIZE;
+    if (count >= load64(h + 112)) { return 0 - 1; }              # the handle's own cap (1.3.2)
+    var row = vp + count * _CMDIT_VERB_SZ;
     store64(row, name);
     store64(row + 8, help);
     var canon = canonical;
@@ -962,6 +1101,9 @@ fn cmdit_verb_trailing_after(h, verb_id, n): i64 {
     if (n < 0) { return 0 - 1; }
     if (load64(h + 104) == 0) { return 0 - 1; }
     if (verb_id >= load64(h + 120)) { return 0 - 1; }
+    # 1.3.2: resolve an alias row to its verb. Marking the alias row "succeeded"
+    # but stored the mark where the dispatcher never reads it. CHANGELOG [1.3.2].
+    verb_id = load64(_cmdit_verb_row(h, verb_id) + 16);
     # +1 so the stored value is always non-zero for a marked verb, keeping 0 as
     # "not marked" in a field that older callers left zeroed.
     store64(_cmdit_verb_row(h, verb_id) + 24, n + 1);
@@ -976,6 +1118,7 @@ fn cmdit_verb_trailing_at(h, verb_id): i64 {
     if (h == 0) { return 0 - 1; }
     if (load64(h + 104) == 0) { return 0 - 1; }
     if (verb_id >= load64(h + 120)) { return 0 - 1; }
+    verb_id = load64(_cmdit_verb_row(h, verb_id) + 16);          # 1.3.2: through an alias row
     var v = load64(_cmdit_verb_row(h, verb_id) + 24);
     if (v == 0) { return 0 - 1; }
     return v - 1;
@@ -985,6 +1128,12 @@ fn cmdit_verb_trailing_at(h, verb_id): i64 {
 # verb_id for chaining, or -1 on error.
 fn cmdit_verb_alias(h, verb_id, alias): i64 {
     if (verb_id < 0) { return 0 - 1; }
+    # 1.3.2: verb_id must name a registered verb, not an alias. Unchecked, an alias
+    # of a missing id dispatched to a cmdit_verb_matched no caller registered, and
+    # an id equal to the alias's own row made it render as a real verb in help and
+    # completions. CHANGELOG [1.3.2].
+    if (verb_id >= cmdit_verb_count(h)) { return 0 - 1; }
+    if (cmdit_verb_is_alias(h, verb_id) == 1) { return 0 - 1; }
     if (_cmdit_verb_add(h, alias, 0, verb_id) < 0) { return 0 - 1; }
     return verb_id;
 }
@@ -1042,7 +1191,14 @@ fn _cmdit_is_auto(h, ep): i64 {
 fn _cmdit_disp_apply_flag(h, argc, argv, i): i64 {
     var tok = load64(argv + i * 8);
     var ep = _cmdit_disp_find(h, tok);
-    if (ep == 0) { store64(h + 56, CMDIT_ERR_UNKNOWN); return 0 - 1; }
+    if (ep == 0) {
+        # 1.3.2: a short token with more after the letter (`-vx`, `-ofile`) is
+        # BUNDLED, as cmdit_parse_argv says; it reported UNKNOWN, even for -o
+        # registered. CHANGELOG [1.3.2].
+        if (load8(tok + 1) != 45 && load8(tok + 2) != 0) { store64(h + 56, CMDIT_ERR_BUNDLED); return 0 - 1; }
+        store64(h + 56, CMDIT_ERR_UNKNOWN);
+        return 0 - 1;
+    }
     var value_ptr = _cmdit_disp_val;
     var ni = i + 1;
     if (value_ptr == 0) {
@@ -1068,6 +1224,7 @@ fn _cmdit_disp_apply_flag(h, argc, argv, i): i64 {
 # is a hard CMDIT_ERR_UNKNOWN; an unmatched non-flag token is CMDIT_ERR_UNKNOWN_VERB.
 # Returns CMDIT_OK / CMDIT_HELP / CMDIT_VERSION / CMDIT_RESULT_ERR.
 fn cmdit_dispatch_argv(h, argc, argv): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     # 1.2.4: reset the per-parse error trio. Without this a handle parsed a
     # second time carried the FIRST parse's err_entry, and cmdit_print_error /
     # cmdit_err_flag name a flag from an error that has nothing to do with the
@@ -1075,10 +1232,16 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
     store64(h + 56, CMDIT_ERR_NONE);
     store64(h + 96, 0);
     store64(h + 152, 0);
+    store64(h + 168, 0);                                          # 1.3.2: help_deferred
     if (load64(h + 48) == 0) { if (argc > 0) { store64(h + 48, load64(argv)); } }
     if (argc < 0) { argc = 0; }                                   # 1.2.4: else alloc(<=0) -> 0 -> null write below
+    # 1.3.2: and an argc so large that (argc + 1) * 8 wraps. 2^61 wrapped to an
+    # 8-byte remainder that the loop then wrote past. CHANGELOG [1.3.2].
+    if (argc >= _CMDIT_SLOTS_MAX) { store64(h + 56, CMDIT_ERR_NOMEM); return CMDIT_RESULT_ERR; }
     var rem = alloc((argc + 1) * 8);
-    if (rem == 0) { return CMDIT_RESULT_ERR; }                    # 1.2.4: OOM
+    # 1.2.4: OOM. 1.3.2: it returned RESULT_ERR with cmdit_error still NONE, the
+    # one error path that set no code; it is CMDIT_ERR_NOMEM now. CHANGELOG [1.3.2].
+    if (rem == 0) { store64(h + 56, CMDIT_ERR_NOMEM); return CMDIT_RESULT_ERR; }
     var rn = 0;
     var verb_found = 0;
     var no_more_flags = 0;
@@ -1133,14 +1296,23 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
         }
         if (is_flag == 1) {
             var ep = _cmdit_disp_find(h, tok);
-            if (ep != 0) { if (_cmdit_is_auto(h, ep) == 0) {
+            if (ep != 0) {
+                if (_cmdit_is_auto(h, ep) == 0) {
                     var r2 = _cmdit_disp_apply_flag(h, argc, argv, i);
                     if (r2 < 0) { return CMDIT_RESULT_ERR; }
                     i = r2; continue;
-                } }
+                }
+                store64(h + 168, 1);                              # 1.3.2: help/version deferred to the verb
+            }
         }
         store64(rem + rn * 8, tok); rn = rn + 1;              # defer to the verb's scope
-        if (verb_found == 1) { post_positionals = post_positionals + 1; }
+        # 1.3.2: only a non-flag token counts toward the trailing threshold. A
+        # verb-scoped flag used to count, so in `exec --tty --root /x c1 ls` the
+        # --tty met exec's one positional and the global --root fell into the
+        # payload. A verb flag's separate value (`-w /app`) still counts, which
+        # can only start the payload EARLIER than the verb's own parse does; a
+        # global is never applied inside it. CHANGELOG [1.3.2].
+        if (is_flag == 0) { post_positionals = post_positionals + 1; }
         i = i + 1;
     }
     store64(rem + rn * 8, 0);                                 # NULL-terminate the slice
@@ -1155,7 +1327,9 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
 # finalize the GLOBAL scope (so global env/required modifiers work). The verb
 # analogue of cmdit_parse. help/version/error results propagate untouched.
 fn cmdit_dispatch(h): i64 {
+    if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     var n = cmdit_argv(h);
+    if (load64(h + 64) == 0) { return CMDIT_RESULT_ERR; }         # 1.3.2: cmdit_argv set ARGV / NOMEM
     var r = cmdit_dispatch_argv(h, n, load64(h + 64));
     if (r != CMDIT_OK) { return r; }
     return cmdit_finalize(h);
@@ -1166,6 +1340,8 @@ fn cmdit_dispatch(h): i64 {
 # triple and is how nested sub-verbs dispatch (build vh with its own verbs, call
 # cmdit_dispatch_argv(vh, cmdit_verb_argc(h), cmdit_verb_argv(h)) instead).
 fn cmdit_parse_verb(vh, h): i64 {
+    if (vh == 0) { return CMDIT_RESULT_ERR; }                     # 1.3.2: see _cmdit_h0
+    if (h == 0) { store64(vh + 56, CMDIT_ERR_NOMEM); return CMDIT_RESULT_ERR; }
     # 1.2.2: carry the dispatcher's trailing-verbatim mark onto the verb handle,
     # so the consumer declares it ONCE (on the top-level handle, where the verb
     # is registered) rather than having to repeat it per verb handle — and so it
@@ -1208,6 +1384,7 @@ fn _cmdit_oprint(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }   # write ->
 # `cmdit_help` is the standard "Usage… Options:" wrapper around this. (1.1.0 — the
 # table-only renderer the rich-help consumer cohort, e.g. anuenue, needs.)
 fn cmdit_help_flags(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
     var count = load64(h + 16);
     var i = 0;
     while (i < count) {
@@ -1258,6 +1435,7 @@ fn cmdit_help_flags(h): i64 {
 # 1.0.0; it now composes `cmdit_help_flags` for the rows. Callers wanting custom
 # framing call `cmdit_help_flags` directly instead of this.
 fn cmdit_help(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
     var prog = load64(h + 48);
     _cmdit_eprint("Usage: ");
     if (prog != 0) { _cmdit_eprint(prog); }
@@ -1271,6 +1449,7 @@ fn cmdit_help(h): i64 {
 # alias rows. Appended by cmdit_help and printed by cmdit_print_error on an
 # unknown verb, so the command list never drifts from registration.
 fn cmdit_verbs_help(h): i64 {
+    if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
     var vp = load64(h + 104);
     if (vp == 0) { return 0; }
     var count = load64(h + 120);
@@ -1294,7 +1473,8 @@ fn cmdit_verbs_help(h): i64 {
 # Standard --version output to STDOUT: "<prog> <version_str>\n" (machine-readable
 # first line). Returns CMDIT_EXIT_OK for direct `return`.
 fn cmdit_version(h, version_str): i64 {
-    var prog = load64(h + 48);
+    var prog = 0;
+    if (h != 0) { prog = load64(h + 48); }                        # 1.3.2: see _cmdit_h0
     if (prog != 0) { _cmdit_oprint(prog); _cmdit_oprint(" "); }
     if (version_str != 0) { _cmdit_oprint(version_str); }
     _cmdit_oprint("\n");
@@ -1326,9 +1506,10 @@ fn _cmdit_eprint_flag(ep): i64 {
 # UNKNOWN stays generic (the token is, by definition, not a registered flag).
 # Returns CMDIT_EXIT_USAGE for direct `return`.
 fn cmdit_print_error(h): i64 {
-    var prog = load64(h + 48);
-    var e = load64(h + 56);
-    var ep = load64(h + 96);
+    var prog = 0;
+    var e = CMDIT_ERR_NOMEM;                                      # 1.3.2: a 0 handle is cmdit_new's OOM
+    var ep = 0;
+    if (h != 0) { prog = load64(h + 48); e = load64(h + 56); ep = load64(h + 96); }
     if (prog != 0) { _cmdit_eprint(prog); _cmdit_eprint(": "); }
     if (e != CMDIT_ERR_UNKNOWN) { _cmdit_eprint_flag(ep); }
     if (e == CMDIT_ERR_UNKNOWN) { _cmdit_eprint("unknown flag"); }
@@ -1353,6 +1534,7 @@ fn cmdit_print_error(h): i64 {
     elif (e == CMDIT_ERR_TOO_MANY_POSITIONAL) { _cmdit_eprint("too many arguments"); }
     elif (e == CMDIT_ERR_UNEXPECTED_VALUE) { _cmdit_eprint("option takes no value"); }
     elif (e == CMDIT_ERR_NOMEM) { _cmdit_eprint("out of memory"); }
+    elif (e == CMDIT_ERR_ARGV) { _cmdit_eprint("could not read the full command line"); }
     else { _cmdit_eprint("argument error"); }
     _cmdit_eprint("\n");
     if (e == CMDIT_ERR_UNKNOWN_VERB) { cmdit_verbs_help(h); }     # list the valid commands
@@ -1490,6 +1672,14 @@ fn _cmdit_is_cmdname_byte(c): i64 {
     return 0;
 }
 
+#
+# 1.3.2 SECURITY: a LEADING '-' is mapped too. '-' is inert mid-word, but as the
+# first byte of the name it is read as OPTIONS by bash's `complete`, fish's
+# `complete -c` and zsh's `#compdef`. With argv[0] = "-DCtrue", 1.3.1 emitted
+# `complete -F __DCtrue_complete -DCtrue`; sourcing it bundled to `-D -C true` and
+# replaced the user's DEFAULT completion with a PATH command run at every TAB.
+# Verified: `complete -p -D` printed `complete -C 'true' -F __DCtrue_complete -D`.
+# Real program names never start with '-'. CHANGELOG [1.3.2].
 fn _cmdit_oprint_cmdname(s): i64 {
     if (s == 0) { return 0; }
     var i = 0;
@@ -1497,6 +1687,7 @@ fn _cmdit_oprint_cmdname(s): i64 {
         var c = load8(s + i);
         var b[2];
         if (_cmdit_is_cmdname_byte(c) == 1) { store8(&b, c); } else { store8(&b, 95); }
+        if (i == 0 && c == 45) { store8(&b, 95); }
         store8(&b + 1, 0);
         _cmdit_oprint(&b);
         i = i + 1;
@@ -1526,8 +1717,8 @@ fn _cmdit_name_is_safe(s): i64 {
     return 1;
 }
 
-# Space-separated canonical verb names (aliases included — a user who types an
-# alias should still get it completed). Unsafe names are omitted.
+# Space-separated verb names, aliases included (a user who types an alias should
+# still get it completed). Unsafe names are omitted.
 fn _cmdit_oprint_verb_words(h): i64 {
     var count = cmdit_verb_count(h);
     var i = 0;
@@ -1544,21 +1735,48 @@ fn _cmdit_oprint_verb_words(h): i64 {
     return 0;
 }
 
-# Space-separated `--long` names of the flags that TAKE A VALUE, so the
-# completion can skip the word after them when locating the verb position.
+# 1 when `c` is [A-Za-z0-9], the bytes a short flag may be emitted as.
+fn _cmdit_is_alnum(c): i64 {
+    if (c >= 48 && c <= 57) { return 1; }
+    if (c >= 65 && c <= 90) { return 1; }
+    if (c >= 97 && c <= 122) { return 1; }
+    return 0;
+}
+
+# Emit, space-separated, every spelling of a value-taking flag: `--long` and `-x`.
+# The completion skips the word after any of them when locating the verb.
+# 1.3.2: the short form is included. Without it, `tool -j 5 <TAB>` took 5 for the
+# verb, the short-flag twin of the long-flag bug 1.2.1 fixed. `sep` is 1 when a
+# separator is owed before the first word. Returns the updated `sep`.
+fn _cmdit_oprint_value_spellings(ep, sep): i64 {
+    var ln = load64(ep + 8);
+    if (ln != 0 && _cmdit_name_is_safe(ln) == 1) {
+        if (sep == 1) { _cmdit_oprint(" "); }
+        _cmdit_oprint("--");
+        _cmdit_oprint(ln);
+        sep = 1;
+    }
+    var sc = load64(ep);
+    if (_cmdit_is_alnum(sc) == 1) {
+        var b[2];
+        store8(&b, sc);
+        store8(&b + 1, 0);
+        if (sep == 1) { _cmdit_oprint(" "); }
+        _cmdit_oprint("-");
+        _cmdit_oprint(&b);
+        sep = 1;
+    }
+    return sep;
+}
+
+# Space-separated spellings of the flags that TAKE A VALUE (see above).
 fn _cmdit_oprint_valueflag_words(h): i64 {
     var count = load64(h + 16);
     var i = 0;
-    var first = 1;
+    var sep = 0;
     while (i < count) {
         var ep = _cmdit_entry(h, i);
-        var ln = load64(ep + 8);
-        if (ln != 0 && load64(ep + 16) != CMDIT_BOOL && _cmdit_name_is_safe(ln) == 1) {
-            if (first == 0) { _cmdit_oprint(" "); }
-            _cmdit_oprint("--");
-            _cmdit_oprint(ln);
-            first = 0;
-        }
+        if (load64(ep + 16) != CMDIT_BOOL) { sep = _cmdit_oprint_value_spellings(ep, sep); }
         i = i + 1;
     }
     return 0;
@@ -1635,7 +1853,10 @@ fn _cmdit_completions_zsh(h, prog): i64 {
         # name, and an alias would duplicate the entry under a second name.
         if (cmdit_verb_is_alias(h, i) == 0) {
             var nm = cmdit_verb_name_at(h, i);
-            if (nm != 0) {
+            # 1.3.2: the 1.2.1 whitelist, which only the bash emitter applied. A ':'
+            # in a name splits zsh's name:description pair; see the fish emitter for
+            # the worse case. CHANGELOG [1.3.2].
+            if (nm != 0 && _cmdit_name_is_safe(nm) == 1) {
                 _cmdit_oprint("        '");
                 _cmdit_oprint_sq(nm);
                 _cmdit_oprint(":");
@@ -1646,18 +1867,8 @@ fn _cmdit_completions_zsh(h, prog): i64 {
         i = i + 1;
     }
     _cmdit_oprint("    )\n");
-    _cmdit_oprint("    local -a valueflags\n    valueflags=(");
-    var vi = 0;
-    var vcount = load64(h + 16);
-    while (vi < vcount) {
-        var vep = _cmdit_entry(h, vi);
-        var vln = load64(vep + 8);
-        if (vln != 0 && load64(vep + 16) != CMDIT_BOOL && _cmdit_name_is_safe(vln) == 1) {
-            _cmdit_oprint(" --");
-            _cmdit_oprint(vln);
-        }
-        vi = vi + 1;
-    }
+    _cmdit_oprint("    local -a valueflags\n    valueflags=( ");
+    _cmdit_oprint_valueflag_words(h);
     _cmdit_oprint(" )\n");
     # Same walk as the bash emitter: find the first non-flag word, skipping the
     # argument of any value-taking flag, rather than assuming position 2.
@@ -1688,7 +1899,11 @@ fn _cmdit_completions_fish(h, prog): i64 {
     while (i < count) {
         if (cmdit_verb_is_alias(h, i) == 0) {
             var nm = cmdit_verb_name_at(h, i);
-            if (nm != 0) {
+            # 1.3.2: the 1.2.1 whitelist, which only the bash emitter applied. fish
+            # expands a `complete -a` argument each time it completes, so a `(cmd)` in
+            # a verb name would run at TAB time inside correct single quotes, the same
+            # class `compgen -W` forced on bash. CHANGELOG [1.3.2].
+            if (nm != 0 && _cmdit_name_is_safe(nm) == 1) {
                 _cmdit_oprint("complete -c ");
                 _cmdit_oprint_cmdname(prog);
                 _cmdit_oprint(" -n __fish_use_subcommand -a '");
@@ -1708,9 +1923,11 @@ fn _cmdit_completions_fish(h, prog): i64 {
     return 0;
 }
 
-# Write a shell completion script for `h`'s registered verbs and flags to
-# STDOUT — stdout, not stderr, because the output is meant to be redirected
-# into a completions file or eval'd.
+# Write a shell completion script for `h`'s registered verbs to STDOUT — stdout,
+# not stderr, because the output is meant to be redirected into a completions
+# file or eval'd. bash also completes the long flags; zsh and fish complete verbs
+# then files. Every emitted name passes the [A-Za-z0-9_.-] whitelist (1.2.1;
+# zsh and fish since 1.3.2).
 #
 # `shell` is "bash", "zsh" or "fish". Returns 0 on success, -1 for an
 # unrecognised shell (nothing is printed in that case, so a caller can report
@@ -1718,7 +1935,10 @@ fn _cmdit_completions_fish(h, prog): i64 {
 fn cmdit_completions(h, shell): i64 {
     if (h == 0 || shell == 0) { return 0 - 1; }
     var prog = load64(h + 48);
+    # 1.3.2: an EMPTY name too, not only a null one; it emitted `complete -F
+    # __complete ` with no command, which errors when sourced.
     if (prog == 0) { prog = "prog"; }
+    if (load8(prog) == 0) { prog = "prog"; }
     if (_cmdit_cstr_eq(shell, "bash") == 1) { return _cmdit_completions_bash(h, prog); }
     if (_cmdit_cstr_eq(shell, "zsh") == 1) { return _cmdit_completions_zsh(h, prog); }
     if (_cmdit_cstr_eq(shell, "fish") == 1) { return _cmdit_completions_fish(h, prog); }

@@ -1230,6 +1230,290 @@ fn main() {
     assert(cn > 0, "fish completion for an ordinary name captured");
     assert(contains(cbuf, "complete -c cmdit-smoke") == 1, "a hyphenated prog name is emitted verbatim");
 
+    test_group("1.3.2 a 0 handle (cmdit_new's OOM result) is safe on every public entry point");
+    # 1.2.4 claimed this and only the getters/modifiers honoured it. Each call below
+    # dereferenced address 0 before 1.3.2. The handle is 0 only when alloc refused,
+    # so the parse family fails closed and reports NOMEM.
+    var zav = alloc(2 * 8); store64(zav, "t"); store64(zav + 8, "x");
+    assert(cmdit_bool(0, 0, "a", "") == 0 - 1, "bool(0) -> -1");
+    assert(cmdit_int(0, 0, "a", 0, "") == 0 - 1, "int(0) -> -1");
+    assert(cmdit_str(0, 0, "a", 0, "") == 0 - 1, "str(0) -> -1");
+    assert(cmdit_enum(0, 0, "a", 0, "x|y", "") == 0 - 1, "enum(0) -> -1");
+    assert(cmdit_repeat(0, 0, "a", "") == 0 - 1, "repeat(0) -> -1");
+    assert(cmdit_verb(0, "go", "") == 0 - 1, "verb(0) -> -1");
+    assert(cmdit_verb_alias(0, 0, "g") == 0 - 1, "verb_alias(0) -> -1");
+    assert(cmdit_parse_argv(0, 2, zav) == CMDIT_RESULT_ERR, "parse_argv(0) -> RESULT_ERR");
+    assert(cmdit_dispatch_argv(0, 2, zav) == CMDIT_RESULT_ERR, "dispatch_argv(0) -> RESULT_ERR");
+    assert(cmdit_parse(0) == CMDIT_RESULT_ERR, "parse(0) -> RESULT_ERR");
+    assert(cmdit_dispatch(0) == CMDIT_RESULT_ERR, "dispatch(0) -> RESULT_ERR");
+    assert(cmdit_finalize(0) == CMDIT_RESULT_ERR, "finalize(0) -> RESULT_ERR");
+    assert(cmdit_argv(0) == 0, "argv(0) -> 0");
+    assert(cmdit_parse_verb(0, 0) == CMDIT_RESULT_ERR, "parse_verb(0, 0) -> RESULT_ERR");
+    var zvh = cmdit_new("t v");
+    assert(cmdit_parse_verb(zvh, 0) == CMDIT_RESULT_ERR, "parse_verb(vh, 0) -> RESULT_ERR");
+    assert(cmdit_error(zvh) == CMDIT_ERR_NOMEM, "... and the child reports NOMEM");
+    assert(cmdit_require_positionals(0, 1) == CMDIT_RESULT_ERR, "require_positionals(0)");
+    assert(cmdit_require_positionals_max(0, 1) == CMDIT_RESULT_ERR, "require_positionals_max(0)");
+    assert(cmdit_require_positionals_exact(0, 1) == CMDIT_RESULT_ERR, "require_positionals_exact(0)");
+    assert(cmdit_error(0) == CMDIT_ERR_NOMEM, "error(0) -> NOMEM");
+    assert(cmdit_err_flag(0) == 0 - 1, "err_flag(0) -> -1");
+    assert(cmdit_positional_count(0) == 0, "positional_count(0) -> 0");
+    assert(cmdit_positional(0, 0) == 0, "positional(0) -> 0");
+    assert(cmdit_verb_matched(0) == 0 - 1, "verb_matched(0) -> -1");
+    assert(cmdit_verb_argc(0) == 0, "verb_argc(0) -> 0");
+    assert(cmdit_verb_argv(0) == 0, "verb_argv(0) -> 0");
+    assert(cmdit_raw_argv(0) == 0, "raw_argv(0) -> 0");
+    assert(cmdit_raw_argc(0) == 0, "raw_argc(0) -> 0");
+    assert(cmdit_help_flags(0) == 0, "help_flags(0) prints nothing");
+    assert(cmdit_help(0) == 0, "help(0) prints nothing");
+    assert(cmdit_verbs_help(0) == 0, "verbs_help(0) prints nothing");
+    var zbuf = alloc(256);
+    capture_print_error(0, zbuf, 256);
+    assert(cstreq(zbuf, "out of memory\n") == 1, "print_error(0) says `out of memory`");
+
+    test_group("1.3.2 dispatch reports NOMEM when its remainder alloc is refused");
+    # Before 1.3.2 this path returned RESULT_ERR with cmdit_error still NONE.
+    var dnh = cmdit_new("t");
+    cmdit_verb(dnh, "go", "");
+    var dnav = alloc(2 * 8); store64(dnav, "t"); store64(dnav + 8, "go");
+    # 2^28: (argc + 1) * 8 is a valid size just past stdlib ALLOC_MAX (2 GiB), so
+    # alloc refuses it and the remainder pointer comes back 0.
+    assert(cmdit_dispatch_argv(dnh, 268435456, dnav) == CMDIT_RESULT_ERR,
+      "a remainder alloc that alloc refuses fails the dispatch");
+    assert(cmdit_error(dnh) == CMDIT_ERR_NOMEM, "-> NOMEM, not ERR_NONE");
+    assert(cmdit_err_flag(dnh) == 0 - 1, "names no flag");
+    # 2^61: (argc + 1) * 8 wraps to 8, a buffer alloc grants. Before 1.3.2 the loop
+    # then wrote the remainder past it.
+    var dnh2 = cmdit_new("t");
+    cmdit_verb(dnh2, "go", "");
+    assert(cmdit_dispatch_argv(dnh2, 2305843009213693952, dnav) == CMDIT_RESULT_ERR,
+      "an argc whose size wraps to a small buffer is refused");
+    assert(cmdit_error(dnh2) == CMDIT_ERR_NOMEM, "-> NOMEM before any write");
+    assert(_cmdit_grow(dnav, 0, 2305843009213693953) == 0, "_cmdit_grow refuses a cap whose size wraps to 16");
+    assert(_cmdit_grow(dnav, 4, 2) == 0, "_cmdit_grow refuses a cap below the copy count");
+    # The positional path at the same wrap: cap 2^61 + 1 doubles to a size that wraps to 16.
+    var pwh = cmdit_new("t");
+    store64(pwh + 32, 2305843009213693953);
+    store64(pwh + 40, 2305843009213693953);
+    assert(cmdit_parse_argv(pwh, 2, dnav) == CMDIT_RESULT_ERR, "positional growth at a wrapping size is refused");
+    assert(cmdit_error(pwh) == CMDIT_ERR_NOMEM, "-> NOMEM, not a 16-byte array");
+
+    test_group("1.3.2 zsh and fish completions apply the 1.2.1 name whitelist");
+    var wh = cmdit_new("tool");
+    cmdit_verb(wh, "add", "add a thing");
+    cmdit_verb(wh, "x(touch /tmp/cmdit_fish)", "hostile name");
+    cmdit_verb(wh, "a:b", "colon splits zsh's name:desc");
+    var wbuf = alloc(16384);
+    capture_completions(wh, "fish", wbuf, 16384);
+    assert(contains(wbuf, "-a 'add'") == 1, "fish keeps a safe verb");
+    assert(contains(wbuf, "touch") == 0, "fish drops a name carrying (cmd)");
+    assert(contains(wbuf, "a:b") == 0, "fish drops a name outside the whitelist");
+    capture_completions(wh, "zsh", wbuf, 16384);
+    assert(contains(wbuf, "'add:add a thing'") == 1, "zsh keeps a safe verb");
+    assert(contains(wbuf, "touch") == 0, "zsh drops a name carrying (cmd)");
+    assert(contains(wbuf, "a:b") == 0, "zsh drops a name with a colon");
+    capture_completions(wh, "bash", wbuf, 16384);
+    assert(contains(wbuf, "touch") == 0, "bash still drops it (1.2.1)");
+
+    test_group("1.3.2 verb aliases must name a registered verb");
+    var ah = cmdit_new("t");
+    var av0 = cmdit_verb(ah, "remove", "");
+    assert(cmdit_verb_alias(ah, av0, "rm") == av0, "alias of a real verb OK");
+    assert(cmdit_verb_alias(ah, 5, "zz") == 0 - 1, "alias of a missing verb -> -1");
+    assert(cmdit_verb_alias(ah, 1, "r") == 0 - 1, "alias of an alias row -> -1");
+    assert(cmdit_verb_count(ah) == 2, "rejected aliases add no rows");
+
+    test_group("1.3.2 _cmdit_repeat_cap terminates past 2^62");
+    # A count above 2^62 used to double the cap into a negative, then 0, forever.
+    var bigc = 4611686018427387905;
+    assert(_cmdit_repeat_cap(bigc) >= bigc, "returns a cap that covers the count");
+    var rch = cmdit_new("t");
+    var rcf = cmdit_repeat(rch, 72, "header", "");
+    var rcav = alloc(3 * 8); store64(rcav, "t"); store64(rcav + 8, "-H"); store64(rcav + 16, "a");
+    assert(cmdit_parse_argv(rch, 3, rcav) == CMDIT_OK, "first -H allocates the list");
+    store64(_cmdit_entry(rch, rcf) + 96, bigc);
+    assert(cmdit_parse_argv(rch, 3, rcav) == CMDIT_RESULT_ERR, "a push at that count fails");
+    assert(cmdit_error(rch) == CMDIT_ERR_NOMEM, "-> NOMEM, and it terminates");
+    store64(rcav + 16, "b");
+    cmdit_parse_argv(rch, 3, rcav);
+    assert(cstreq(cmdit_get_str(rch, rcf), "a") == 1, "a refused push leaves the last-wins view alone");
+
+    test_group("1.3.2 a trailing-marked verb counts only positionals, not its own flags");
+    # `exec --tty --root /x c1 ls`: --tty is a verb flag, --root a global. Before
+    # 1.3.2 --tty counted as exec's one positional, so --root fell into the payload.
+    var th1 = cmdit_new("t");
+    var tg1 = cmdit_str(th1, 0, "root", "/default", "");
+    var tv1 = cmdit_verb(th1, "exec", "");
+    cmdit_verb_trailing_after(th1, tv1, 1);
+    var tav1 = alloc(7 * 8);
+    store64(tav1, "t"); store64(tav1 + 8, "exec"); store64(tav1 + 16, "--tty");
+    store64(tav1 + 24, "--root"); store64(tav1 + 32, "/x"); store64(tav1 + 40, "c1"); store64(tav1 + 48, "ls");
+    assert(cmdit_dispatch_argv(th1, 7, tav1) == CMDIT_OK, "dispatch OK");
+    assert(cstreq(cmdit_get_str(th1, tg1), "/x") == 1, "the global after a verb flag is applied");
+    var tc1 = cmdit_new("t exec");
+    cmdit_bool(tc1, 0, "tty", "");
+    assert(cmdit_parse_verb(tc1, th1) == CMDIT_OK, "the verb scope parses --tty c1 ls");
+    assert(cmdit_positional_count(tc1) == 2, "payload is c1 ls");
+    # The payload is still never parsed for globals.
+    var th1b = cmdit_new("t");
+    var tg1b = cmdit_str(th1b, 0, "root", "/default", "");
+    var tv1b = cmdit_verb(th1b, "exec", "");
+    cmdit_verb_trailing_after(th1b, tv1b, 1);
+    store64(tav1 + 16, "c1"); store64(tav1 + 24, "mycmd"); store64(tav1 + 32, "--root"); store64(tav1 + 40, "/y");
+    assert(cmdit_dispatch_argv(th1b, 6, tav1) == CMDIT_OK, "dispatch OK (payload has --root)");
+    assert(cstreq(cmdit_get_str(th1b, tg1b), "/default") == 1, "a global inside the payload is still not applied");
+
+    test_group("1.3.2 `tool add --help` is not blocked by a required global");
+    var th2 = cmdit_new("t");
+    var tr2 = cmdit_str(th2, 0, "handle", 0, "");
+    cmdit_required(th2, tr2);
+    cmdit_verb(th2, "add", "");
+    var tav2 = alloc(3 * 8); store64(tav2, "t"); store64(tav2 + 8, "add"); store64(tav2 + 16, "--help");
+    assert(cmdit_dispatch_argv(th2, 3, tav2) == CMDIT_OK, "dispatch defers --help to the verb");
+    assert(cmdit_finalize(th2) == CMDIT_OK, "finalize does not demand --handle when help was asked for");
+    var tc2 = cmdit_new("t add");
+    assert(cmdit_parse_verb(tc2, th2) == CMDIT_HELP, "the verb scope returns HELP");
+    var th2b = cmdit_new("t");
+    var tr2b = cmdit_str(th2b, 0, "handle", 0, "");
+    cmdit_required(th2b, tr2b);
+    cmdit_verb(th2b, "add", "");
+    store64(tav2 + 16, "x");
+    assert(cmdit_dispatch_argv(th2b, 3, tav2) == CMDIT_OK, "an ordinary dispatch");
+    assert(cmdit_finalize(th2b) == CMDIT_RESULT_ERR, "still demands --handle without --help");
+
+    test_group("1.3.2 a `--` right at a trailing-verbatim threshold is consumed");
+    # `exec c1 -- ls -l` (the 1.2.2 escape hatch) ran the command `--` once exec
+    # was marked. A `--` at the threshold is now consumed, kubectl-style.
+    var th3 = cmdit_new("t");
+    var tv3 = cmdit_verb(th3, "exec", "");
+    cmdit_verb_trailing_after(th3, tv3, 1);
+    var tav3 = alloc(6 * 8);
+    store64(tav3, "t"); store64(tav3 + 8, "exec"); store64(tav3 + 16, "c1");
+    store64(tav3 + 24, "--"); store64(tav3 + 32, "ls"); store64(tav3 + 40, "-l");
+    assert(cmdit_dispatch_argv(th3, 6, tav3) == CMDIT_OK, "dispatch OK");
+    var tc3 = cmdit_new("t exec");
+    assert(cmdit_parse_verb(tc3, th3) == CMDIT_OK, "verb parse OK");
+    assert(cmdit_positional_count(tc3) == 3, "payload is c1 ls -l, without the --");
+    assert(cstreq(cmdit_positional(tc3, 1), "ls") == 1, "the command is ls");
+    var th3b = cmdit_new("t");
+    var tv3b = cmdit_verb(th3b, "exec", "");
+    cmdit_verb_trailing_after(th3b, tv3b, 1);
+    store64(tav3 + 32, "--");                      # t exec c1 -- -- -l
+    assert(cmdit_dispatch_argv(th3b, 6, tav3) == CMDIT_OK, "dispatch OK (double --)");
+    var tc3b = cmdit_new("t exec");
+    cmdit_parse_verb(tc3b, th3b);
+    assert(cstreq(cmdit_positional(tc3b, 1), "--") == 1, "only the first -- is consumed");
+
+    test_group("1.3.2 a bundled short before the verb is BUNDLED, as in the parse core");
+    var th4 = cmdit_new("t");
+    cmdit_bool(th4, 118, "verbose", "");
+    cmdit_verb(th4, "add", "");
+    var tav4 = alloc(3 * 8); store64(tav4, "t"); store64(tav4 + 8, "-vx"); store64(tav4 + 16, "add");
+    assert(cmdit_dispatch_argv(th4, 3, tav4) == CMDIT_RESULT_ERR, "-vx before the verb fails");
+    assert(cmdit_error(th4) == CMDIT_ERR_BUNDLED, "-> BUNDLED, not UNKNOWN");
+
+    test_group("1.3.2 trailing marks resolve through an alias row");
+    var th5 = cmdit_new("t");
+    var tv5 = cmdit_verb(th5, "exec", "");
+    var ta5 = cmdit_verb_alias(th5, tv5, "x");
+    assert(ta5 == tv5, "alias returns the canonical id");
+    assert(cmdit_verb_trailing_after(th5, 1, 1) == tv5, "marking the alias row marks the verb");
+    assert(cmdit_verb_trailing_at(th5, tv5) == 1, "the canonical verb carries the mark");
+    assert(cmdit_verb_trailing_at(th5, 1) == 1, "and reading it through the alias row agrees");
+
+    test_group("1.3.2 the argv bridge fails closed when argv cannot be read whole");
+    # n <= 0: no argv[0], i.e. /proc/self/cmdline was unreadable. len >= 2 MiB: stdlib
+    # args_init's single read filled its buffer and may have cut the tail. Both used
+    # to parse as a short (or empty) argv and return CMDIT_OK.
+    assert(_cmdit_argv_whole(0, 0) == 0, "no arguments at all -> not whole");
+    assert(_cmdit_argv_whole(0 - 1, 0) == 0, "a negative count -> not whole");
+    assert(_cmdit_argv_whole(3, 100) == 1, "an ordinary command line is whole");
+    assert(_cmdit_argv_whole(3, 2097151) == 1, "one byte under the read buffer is whole");
+    assert(_cmdit_argv_whole(3, 2097152) == 0, "a full 2 MiB read may be cut -> not whole");
+    var ah1 = cmdit_new("t");
+    var ah2 = cmdit_new("t");
+    assert(cmdit_argv(ah1) >= 1, "the test process argv materializes");
+    cmdit_argv(ah2);
+    assert(cmdit_raw_argv(ah1) == cmdit_raw_argv(ah2), "materialized once per process, shared by handles");
+    var aeh = cmdit_new("t");
+    store64(aeh + 56, CMDIT_ERR_ARGV);
+    var aebuf = alloc(256);
+    capture_print_error(aeh, aebuf, 256);
+    assert(cstreq(aebuf, "t: could not read the full command line\n") == 1, "ARGV renders its message");
+
+    test_group("1.3.2 the public CMDIT_*_MAX vars no longer steer storage");
+    # Each was read live: raising one after a table was allocated overflowed the heap,
+    # and CMDIT_REPEAT_MAX = 0 hung the next repeat push.
+    var sv_flags = CMDIT_FLAGS_MAX;
+    var sv_verbs = CMDIT_VERB_MAX;
+    var sv_rep = CMDIT_REPEAT_MAX;
+    var sv_ent = CMDIT_ENTRY_SIZE;
+    var mh = cmdit_new("t");
+    CMDIT_FLAGS_MAX = 200;
+    var mk = 2;
+    var mlast = 0;
+    while (mk < 70) { mlast = cmdit_bool(mh, 0, "f", ""); mk = mk + 1; }
+    assert(mlast == 0 - 1, "registration still stops at the handle's 64");
+    assert(cmdit_get_bool(mh, 63) == 0, "flag 63 is readable");
+    CMDIT_REPEAT_MAX = 0;
+    var mrh = cmdit_new("t");
+    var mrf = cmdit_repeat(mrh, 72, "header", "");
+    var mrav = alloc(5 * 8);
+    store64(mrav, "t"); store64(mrav + 8, "-H"); store64(mrav + 16, "a");
+    store64(mrav + 24, "-H"); store64(mrav + 32, "b");
+    assert(cmdit_parse_argv(mrh, 5, mrav) == CMDIT_OK, "repeat pushes with CMDIT_REPEAT_MAX = 0 (it hung)");
+    assert(cmdit_repeat_count(mrh, mrf) == 2, "both kept");
+    CMDIT_VERB_MAX = 300;
+    var mvh = cmdit_new("t");
+    var mvk = 0;
+    var mvlast = 0;
+    while (mvk < 130) { mvlast = cmdit_verb(mvh, "v", ""); mvk = mvk + 1; }
+    assert(mvlast == 0 - 1, "verb registration still stops at the handle's 128");
+    CMDIT_ENTRY_SIZE = 8;
+    assert(cmdit_get_bool(mh, 2) == 0, "entry stride does not follow CMDIT_ENTRY_SIZE");
+    CMDIT_FLAGS_MAX = sv_flags;
+    CMDIT_VERB_MAX = sv_verbs;
+    CMDIT_REPEAT_MAX = sv_rep;
+    CMDIT_ENTRY_SIZE = sv_ent;
+
+    test_group("1.3.2 SECURITY: a program name starting with '-' is not read as options");
+    # argv[0] = "-DCtrue" emitted `complete -F __DCtrue_complete -DCtrue`; sourcing it
+    # bundled to `-D -C true` and replaced the user's default completion with a PATH
+    # command run at every TAB. The leading '-' is mapped to '_' in all three shells.
+    var dsh = cmdit_new("-DCtrue");
+    cmdit_verb(dsh, "run", "");
+    var dsbuf = alloc(16384);
+    capture_completions(dsh, "bash", dsbuf, 16384);
+    assert(contains(dsbuf, "_complete _DCtrue\n") == 1, "bash registers the mapped name");
+    assert(contains(dsbuf, " -DCtrue") == 0, "no -DCtrue reaches `complete`");
+    capture_completions(dsh, "fish", dsbuf, 16384);
+    assert(contains(dsbuf, "complete -c _DCtrue") == 1, "fish -c gets the mapped name");
+    assert(contains(dsbuf, "-c -DCtrue") == 0, "fish never sees -DCtrue");
+    capture_completions(dsh, "zsh", dsbuf, 16384);
+    assert(contains(dsbuf, "#compdef _DCtrue") == 1, "zsh #compdef gets the mapped name");
+    var dsh2 = cmdit_new("tool-x");
+    cmdit_verb(dsh2, "run", "");
+    capture_completions(dsh2, "bash", dsbuf, 16384);
+    assert(contains(dsbuf, "_complete tool-x\n") == 1, "an internal '-' is kept");
+
+    test_group("1.3.2 an empty program name falls back to `prog` in completions");
+    var emh = cmdit_new("");
+    cmdit_verb(emh, "run", "");
+    capture_completions(emh, "bash", dsbuf, 16384);
+    assert(contains(dsbuf, "complete -F _prog_complete prog\n") == 1, "empty name -> prog");
+
+    test_group("1.3.2 completions skip the value of a SHORT value flag too");
+    # `tool -j 5 <TAB>` took 5 for the verb: only `--long` spellings were in the skip set.
+    var svh = cmdit_new("tool");
+    cmdit_str(svh, 114, "root", 0, "");
+    cmdit_int(svh, 106, 0, 1, "");
+    cmdit_bool(svh, 118, "verbose", "");
+    cmdit_verb(svh, "add", "");
+    capture_completions(svh, "bash", dsbuf, 16384);
+    assert(contains(dsbuf, "local valueflags='--root -r -j'") == 1, "bash skip set has --root -r -j");
+    capture_completions(svh, "zsh", dsbuf, 16384);
+    assert(contains(dsbuf, "valueflags=( --root -r -j )") == 1, "zsh skip set has --root -r -j");
+
     return assert_summary();
 }
 

@@ -227,7 +227,7 @@ fn _fz_check_result(h, rc, nflags): i64 {
     _fz_check(rc == CMDIT_OK || rc == CMDIT_HELP || rc == CMDIT_VERSION || rc == CMDIT_RESULT_ERR,
       "I1 undocumented result code");
     var err = cmdit_error(h);
-    _fz_check(err >= CMDIT_ERR_NONE && err <= CMDIT_ERR_NOMEM, "I2 error outside CmditErr");
+    _fz_check(err >= CMDIT_ERR_NONE && err <= CMDIT_ERR_ARGV, "I2 error outside CmditErr");
     if (rc == CMDIT_RESULT_ERR) {
         _fz_check(err != CMDIT_ERR_NONE, "I2 RESULT_ERR with ERR_NONE");
     } else {

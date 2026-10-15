@@ -1,6 +1,6 @@
 # cmdit benchmarks
 
-> Captured for **1.3.0** (2026-10-14) on toolchain **6.7.9**. Harness:
+> Captured for **1.3.2** (2026-10-14) on toolchain **6.7.9**. Harness:
 > [`tests/cmdit.bcyr`](../tests/cmdit.bcyr) (stdlib `lib/bench.cyr`). Reproduce with
 > `cyrius build tests/cmdit.bcyr build/cmdit-bench && ./build/cmdit-bench`.
 > The v1.0 capture this replaces is accounted for in [the bisect](#where-the-v10-numbers-went) below.
@@ -32,19 +32,25 @@ being compared**, not a single "representative" run. Interleaving spreads slow d
 (thermal, frequency, background load) across all variants instead of letting it land
 on whichever ran last.
 
-## Results (1.3.0)
+## Results (1.3.2)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux 7.2, `powersave` governor.
 
 | Benchmark | median | min–max | iters | what it measures |
 |---|---|---|---|---|
-| `cmdit_new_floor` | **1.97 µs** | 1.93–2.01 | 4096 | handle alloc + the 7168-byte entry-table zero + 2 auto registrations |
-| `setup_baseline` | 1.96 µs | 1.90–2.02 | 4096 | `cmdit_new` + register bool/int/str/enum (no parse) |
-| `parse_argv_mixed` | 2.34 µs | 2.28–2.44 | 4096 | the above + parse a 9-token argv (bool, short-int, `=value` str, enum, 2 positionals) |
-| `get_enum_rewalk` | **91 ns** | 89–92 | 1 000 000 | one `cmdit_get_enum` choice-set re-walk (worst case = last of 3) |
-| `dispatch_before_verb` | **165 ns** | 160–166 | 200 000 | single-pass dispatch, global flag **before** the verb |
-| `dispatch_after_verb` | **238 ns** | 230–240 | 200 000 | single-pass dispatch, global flag **after** the verb |
-| `repeat_accumulate_32` | 3.01 µs | 2.97–3.06 | 4096 | `cmdit_new` + 32 `-H` occurrences (lazy list alloc + 32 pushes) |
+| `cmdit_new_floor` | **2.02 µs** | 1.95–3.35 | 4096 | handle alloc + the 7168-byte entry-table zero + 2 auto registrations |
+| `setup_baseline` | 1.97 µs | 1.94–2.14 | 4096 | `cmdit_new` + register bool/int/str/enum (no parse) |
+| `parse_argv_mixed` | 2.42 µs | 2.39–3.63 | 4096 | the above + parse a 9-token argv (bool, short-int, `=value` str, enum, 2 positionals) |
+| `get_enum_rewalk` | **96 ns** | 95–111 | 1 000 000 | one `cmdit_get_enum` choice-set re-walk (worst case = last of 3) |
+| `dispatch_before_verb` | **172 ns** | 170–175 | 200 000 | single-pass dispatch, global flag **before** the verb |
+| `dispatch_after_verb` | **243 ns** | 240–245 | 200 000 | single-pass dispatch, global flag **after** the verb |
+| `repeat_accumulate_32` | 3.18 µs | 3.13–3.22 | 4096 | `cmdit_new` + 32 `-H` occurrences (lazy list alloc + 32 pushes) |
+| `verb_new_floor` | **2.83 µs** | 2.79–2.89 | 4096 | `cmdit_new` + the first `cmdit_verb` (allocates and zeroes the 4096-byte verb table); new in 1.3.2 |
+
+Against 1.3.1, measured the same way, every row is within ±2.5% except `verb_new_floor`, which
+went **8.36 → 2.83 µs (−66%)** (below). Dispatch is up 2.4% (4–6 ns), consistent with the
+guards 1.3.2 added to the dispatcher (the help-deferral mark, the bundled-short check, and
+counting only positionals toward a trailing threshold).
 
 ## What the numbers say
 
@@ -58,6 +64,11 @@ Host: AMD Ryzen 7 5800H, x86_64 Linux 7.2, `powersave` governor.
   inside run-to-run noise. The parse loop over a representative 9-token argv costs
   **~0.38 µs**. With construction no longer swamping it, that is now ~16% of a full
   `cmdit_new` + register + parse, not ~3%.
+- **A verb tool's construction is now ~2.8 µs, down from ~8.4 µs.** The first `cmdit_verb`
+  zeroes a 128 × 32 = 4096-byte verb table, and that loop was still byte-at-a-time after 1.3.0
+  fixed the entry table's. 1.3.2 made it a word loop. `verb_new_floor − cmdit_new_floor ≈ 0.8 µs`
+  is now the whole cost of the verb table. The dispatch benches build their handle outside the
+  timed loop, which is why nothing measured this until 1.3.2 added the bench.
 - **A repeat push is ~33 ns** (`repeat_accumulate_32 − cmdit_new_floor ≈ 1.04 µs` over
   32 pushes, including the lazy list alloc).
 - **Enum dispatch is ~91 ns** for a 3-choice set, re-walked per `cmdit_get_enum` call.
@@ -89,6 +100,7 @@ median of 7 (ns):
 | 1.2.4 source | 11 464 | 11 848 | 165 | 234 | 12 599 |
 | 1.2.6 source | 11 486 | 11 755 | 164 | 233 | 12 691 |
 | **1.3.0 source** | **1 971** | **2 339** | **165** | **238** | **3 014** |
+| 1.3.2 source (separate run) | 2 023 | 2 421 | 172 | 243 | 3 181 |
 
 What it settles:
 

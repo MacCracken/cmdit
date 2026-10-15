@@ -8,7 +8,8 @@
 
 v1.0.0 (2026-06-25) froze the public API. Every v1.0 criterion and milestones M0–M4
 are done (extraction, flag modifiers, verb dispatch, completeness delta + freeze). 1.1,
-1.2.x and 1.3.x are append-only on the frozen surface. For details, see the CHANGELOG and
+1.2.x and 1.3.x are append-only on the frozen surface; 1.3.2 was a full audit sweep
+([`../audit/2026-10-14-audit.md`](../audit/2026-10-14-audit.md)). For details, see the CHANGELOG and
 ADRs [0001](../adr/0001-flag-modifiers.md) / [0002](../adr/0002-verb-dispatch.md) /
 [0003](../adr/0003-v1-freeze.md).
 
@@ -32,46 +33,48 @@ Each migration follows the kii/anuenue recipe (stiva for verb tools). A gap that
 surfaces ships append-only (that is how `cmdit_help_flags`, verb introspection, and
 `verb_trailing_after` arrived).
 
-## Gaps found by the adoption survey (2026-10-14) — open
+## Pinned for 1.3.x
 
-Surveying the 18 hand-rolled candidates site by site found places where cmdit cannot
-express a real tool's CLI, or does something wrong. The two worst were places where the
-stdlib `lib/flags.cyr` cmdit was forked from had moved past cmdit. They shipped in 1.3.1:
-positionals and repeat lists past 128 / 64 dropped silently, and `--bool=0` turned the flag
-on. What remains, ranked by how many repos each blocks or affects:
+The 2026-10-14 adoption survey of the 18 hand-rolled candidates found where cmdit cannot
+express a real tool's CLI. Its two worst gaps shipped in 1.3.1 (silent positional/repeat caps,
+`--bool=0`). The rest are pinned below, one theme per release, ordered by how many repos each
+unblocks. Every item is append-only on the frozen 1.0.0 surface.
 
-1. **The offending token is not reported.** `cmdit_print_error` says "unknown flag" and keeps
-   no copy of the token or rejected value. Seven repos echo it today, and shakti's
-   integration test asserts it: shakti, attn11, owl, chakshu, hapi, phylax, agnova. The
-   unknown-*verb* token is already stored (ctx +152). The stdlib precedent is
-   `flags_error_arg`. Remedy: append-only `cmdit_err_token(h)`. Optionally include the token
-   in `cmdit_print_error` too, which would change its output for current consumers.
-2. **No top-level "stop at the first positional."** Blocks shakti, where the command owns
-   every later token (`shakti ls -la`). kriya's `xargs`/`env` need it too. The mechanism
-   exists per verb (`cmdit_verb_trailing_after`). The stdlib precedent is
-   `flags_set_stop_at_positional`. Remedy: an append-only top-level setter.
-3. **Help renders only to stderr.** The survey found 14 of the 18 candidates printing help on
-   stdout, but most keep hand-written help for byte identity, so this rarely blocks. anuenue
-   chose stderr on purpose, so this is a policy question. Remedy: an append-only fd-taking
-   variant.
-4. **Weaker, single-repo demand:**
-   - Attached short values `-U3` (sit `diff`/`show`; v2 backlog).
-   - Optional-value flags: cyim `--wc[=l]`, chakshu `--watch [PATH]`, kriya (v2 backlog).
-   - Clusters (kriya; v2 backlog).
-   - Refusing a repeated flag, or a per-flag occurrence count (cyim; asserted by 9 smoke cases).
-   - Negative-number positionals such as `hadara at -1000`. `cmdit_verb_trailing_after(h, v, 0)`
-     already works around it.
-   - Hidden verbs, kept out of help and completions (hoosh `bench`).
-   - Public flag-table introspection (kriya's expander and `--help=json`).
-   - Refusing a flag-shaped value (hapi audit F-019).
-   - Case-insensitive enums (phylax).
-   - Long-name aliases (ark).
-   - Per-verb flags in `cmdit_completions` (ark).
-   - argv-order between two different flags (attn11 `--preset`, owl `-n`/`-N`; the v2
-     `--no-foo` item).
+- [ ] **1.3.3 — the offending token.** `cmdit_err_token(h)`: the unknown token or the
+  rejected value behind the last error. The unknown-*verb* token is already stored (ctx +152);
+  the stdlib precedent is `flags_error_arg`. Decide in that release whether
+  `cmdit_print_error` prints it too (an output change for current consumers).
+  *Unblocks:* shakti (one of its two blockers). *Wanted by:* attn11, owl, chakshu, hapi,
+  phylax, agnova.
+- [ ] **1.3.4 — stop at the first positional.** A top-level setter so every token after the
+  first positional is a positional, reusing the per-verb trailing-verbatim mechanism
+  (`cmdit_verb_trailing_after`). The stdlib precedent is `flags_set_stop_at_positional`.
+  *Unblocks:* shakti (its last blocker), kriya's `xargs`/`env`.
+- [ ] **1.3.5 — output to a chosen fd, and hidden verbs.**
+  - fd-taking variants of `cmdit_help` / `cmdit_help_flags` / `cmdit_verbs_help`. 14 of the
+    18 candidates print help on stdout; anuenue's stderr choice stays the default.
+  - Hidden verbs, kept out of help, the verb list and completions (hoosh `bench`).
+- [ ] **1.3.6 — small modifiers**, each requested by one repo:
+  - a once-only flag, or a per-flag occurrence count (cyim; 9 smoke cases assert it);
+  - case-insensitive enum matching (phylax `--severity-threshold`);
+  - a second long name for a flag (ark `--marketplace|--market`);
+  - refusing a flag-shaped value (hapi audit F-019).
+- [ ] **1.3.7 — flag-table introspection.**
+  - `cmdit_flag_*_at` accessors mirroring the 1.2.0 verb ones (kriya's expander and
+    `--help=json`).
+  - Per-verb flags in `cmdit_completions`, which needs them (ark).
 
-Items 1 and 2 are what still blocks shakti. kriya and cyim are blocked on the v2 backlog
-(clusters, optional values); bannermanor's blockers were the two 1.3.1 fixes.
+**Upstream (cyrius stdlib):** `args_init` reads `/proc/self/cmdline` once into a fixed
+2 MiB buffer, so a longer command line (ARG_MAX rises with `ulimit -s`) is cut. Since 1.3.2,
+cmdit fails closed with `CMDIT_ERR_ARGV` instead of parsing the prefix (audit SEC-7). The
+real fix is in the stdlib: read until EOF, growing the buffer. Every user of stdlib `args`
+has the truncation today.
+
+**Not pinned:** negative-number positionals such as `hadara at -1000`;
+`cmdit_verb_trailing_after(h, v, 0)` already handles them, and 1.3.4 will cover the top level.
+Attached short values (sit `-U3`), clusters (kriya), optional-value flags (cyim `--wc[=l]`,
+chakshu `--watch [PATH]`) and argv order between two flags (attn11 `--preset`, owl `-n`/`-N`)
+are v2 backlog, below.
 
 ## v2 backlog — confirmed-deferred, not dropped
 
@@ -81,8 +84,12 @@ Any of them would be an opt-in, append-only addition:
 - Bundled short bools `-abc` and attached short value `-xvalue`. The 2026-10-14 survey found
   more demand than the 1.0 re-survey did: kriya (`-rf`, `-n5`, solved with a pre-parse
   expander) and sit (`-U<N>`), besides darshini.
-- Count flags `-vvv`, float flags, `--no-foo` negation.
-- Optional-value flags, mutex / required-if sugar.
+- Optional-value flags: cyim `--wc[=l]`, chakshu `--watch [PATH]`, kriya's optional-value
+  longs.
+- Count flags `-vvv`, float flags, `--no-foo` negation (it would settle owl's `-n`/`-N`).
+- A per-flag argv position, for precedence between two different flags (attn11 `--preset`
+  against explicit dimensions).
+- Mutex / required-if sugar.
 - Named-positional help, config cascades.
 
 ## Out of scope
