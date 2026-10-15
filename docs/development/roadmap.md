@@ -8,8 +8,9 @@
 
 v1.0.0 (2026-06-25) froze the public API. Every v1.0 criterion and milestones M0–M4
 are done (extraction, flag modifiers, verb dispatch, completeness delta + freeze). 1.1,
-1.2.x and 1.3.x are append-only on the frozen surface; 1.3.2 was a full audit sweep
-([`../audit/2026-10-14-audit.md`](../audit/2026-10-14-audit.md)). For details, see the CHANGELOG and
+1.2.x and 1.3.x are append-only on the frozen surface. 1.3.2 was a full audit sweep
+([`../audit/2026-10-14-audit.md`](../audit/2026-10-14-audit.md)), and 1.3.3 shipped the
+first pinned survey gap, `cmdit_err_token` / `cmdit_err_value`. For details, see the CHANGELOG and
 ADRs [0001](../adr/0001-flag-modifiers.md) / [0002](../adr/0002-verb-dispatch.md) /
 [0003](../adr/0003-v1-freeze.md).
 
@@ -37,19 +38,14 @@ surfaces ships append-only (that is how `cmdit_help_flags`, verb introspection, 
 
 The 2026-10-14 adoption survey of the 18 hand-rolled candidates found where cmdit cannot
 express a real tool's CLI. Its two worst gaps shipped in 1.3.1 (silent positional/repeat caps,
-`--bool=0`). The rest are pinned below, one theme per release, ordered by how many repos each
-unblocks. Every item is append-only on the frozen 1.0.0 surface.
+`--bool=0`), and the offending-token accessor (seven repos) in 1.3.3. The rest are pinned
+below, one theme per release, ordered by how many repos each unblocks. Every item is
+append-only on the frozen 1.0.0 surface.
 
-- [ ] **1.3.3 — the offending token.** `cmdit_err_token(h)`: the unknown token or the
-  rejected value behind the last error. The unknown-*verb* token is already stored (ctx +152);
-  the stdlib precedent is `flags_error_arg`. Decide in that release whether
-  `cmdit_print_error` prints it too (an output change for current consumers).
-  *Unblocks:* shakti (one of its two blockers). *Wanted by:* attn11, owl, chakshu, hapi,
-  phylax, agnova.
 - [ ] **1.3.4 — stop at the first positional.** A top-level setter so every token after the
   first positional is a positional, reusing the per-verb trailing-verbatim mechanism
   (`cmdit_verb_trailing_after`). The stdlib precedent is `flags_set_stop_at_positional`.
-  *Unblocks:* shakti (its last blocker), kriya's `xargs`/`env`.
+  *Unblocks:* shakti (its last blocker since 1.3.3), kriya's `xargs`/`env`.
 - [ ] **1.3.5 — output to a chosen fd, and hidden verbs.**
   - fd-taking variants of `cmdit_help` / `cmdit_help_flags` / `cmdit_verbs_help`. 14 of the
     18 candidates print help on stdout; anuenue's stderr choice stays the default.

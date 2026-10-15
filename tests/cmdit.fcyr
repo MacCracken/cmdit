@@ -17,8 +17,11 @@
 #       ranged int is inside its bounds, the repeat list is dense
 #   I6  a fresh handle gives the same answer twice, and a handle whose previous
 #       parse failed gives the same error as a fresh one (the 1.2.4 err_entry
-#       leak class). Handles are otherwise single-parse, so only the error trio
-#       is compared on the reused one.
+#       leak class). Handles are otherwise single-parse, so only the error fields
+#       are compared on the reused one.
+#   I7  (1.3.3) a clean result carries no err_token / err_value; a token is
+#       pointer-identical to an argv token; a value points inside one, and is set
+#       exactly when the error rejects a value
 #
 # Every 50th argv is long (up to 400 tokens) and mostly positional-shaped, with
 # frequent -H, so the parse usually runs past the 128-positional and 64-repeat
@@ -176,6 +179,18 @@ fn _fz_build_argv(): i64 {
     return 0;
 }
 
+# 1 if `p` points into one of argv[1..argc), its terminating NUL included (an
+# attached `--x=` value is the empty string at the token's end).
+fn _fz_in_argv(p): i64 {
+    var i = 1;
+    while (i < _fz_argc) {
+        var t = load64(_fz_argv + i * 8);
+        if (t != 0) { if (p >= t && p <= t + strlen(t)) { return 1; } }
+        i = i + 1;
+    }
+    return 0;
+}
+
 # 1 if `p` is pointer-identical to one of argv[1..argc).
 fn _fz_is_argv_token(p): i64 {
     var i = 1;
@@ -247,6 +262,20 @@ fn _fz_check_result(h, rc, nflags): i64 {
     if (names_one == 1) {
         _fz_check(ef >= 0 && ef < nflags, "I3 err_flag does not name a registered flag");
     }
+    var tk = cmdit_err_token(h);
+    var vl = cmdit_err_value(h);
+    if (rc != CMDIT_RESULT_ERR) { _fz_check(tk == 0 && vl == 0, "I7 a clean result carries a token or value"); }
+    if (tk != 0) { _fz_check(_fz_is_argv_token(tk), "I7 err_token is not an argv token"); }
+    if (vl != 0) { _fz_check(_fz_in_argv(vl), "I7 err_value does not point into argv"); }
+    var has_tok = _cmdit_is_value_err(err);
+    if (err == CMDIT_ERR_UNKNOWN || err == CMDIT_ERR_BUNDLED) { has_tok = 1; }
+    if (err == CMDIT_ERR_UNKNOWN_VERB || err == CMDIT_ERR_MISSING_VALUE) { has_tok = 1; }
+    if (has_tok == 1) { _fz_check(tk != 0, "I7 an error about a token carries none"); }
+    if (_cmdit_is_value_err(err) == 1) {
+        _fz_check(vl != 0, "I7 a value error without its value");
+    } else {
+        _fz_check(vl == 0, "I7 a value for a non-value error");
+    }
     return 0;
 }
 
@@ -310,6 +339,8 @@ fn _fz_cmd_iter(): i64 {
     _fz_check(rc3 == rc2, "I6 a failed earlier parse changed the result");
     _fz_check(cmdit_error(h3) == cmdit_error(h2), "I6 a failed earlier parse leaked its error code");
     _fz_check(cmdit_err_flag(h3) == cmdit_err_flag(h2), "I6 a failed earlier parse leaked its err_flag");
+    _fz_check(cmdit_err_token(h3) == cmdit_err_token(h2), "I6 a failed earlier parse leaked its err_token");
+    _fz_check(cmdit_err_value(h3) == cmdit_err_value(h2), "I6 a failed earlier parse leaked its err_value");
     return 0;
 }
 
@@ -358,6 +389,8 @@ fn _fz_verb_iter(): i64 {
     _fz_check(rc3 == rc2, "I6 a failed earlier dispatch changed the result");
     _fz_check(cmdit_error(h3) == cmdit_error(h2), "I6 a failed earlier dispatch leaked its error code");
     _fz_check(cmdit_err_flag(h3) == cmdit_err_flag(h2), "I6 a failed earlier dispatch leaked its err_flag");
+    _fz_check(cmdit_err_token(h3) == cmdit_err_token(h2), "I6 a failed earlier dispatch leaked its err_token");
+    _fz_check(cmdit_err_value(h3) == cmdit_err_value(h2), "I6 a failed earlier dispatch leaked its err_value");
     return 0;
 }
 

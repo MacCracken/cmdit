@@ -4,6 +4,103 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-10-14
+
+**The offending token: `cmdit_err_token` / `cmdit_err_value`, and error lines that say what
+the user typed.** This is the first of the roadmap's pinned 1.3.x items, and one of shakti's
+two adoption blockers. Two append-only accessors are added, and `cmdit_print_error`'s output
+changes (decided for this release). **503 → 562 assertions**, and 18/18 seeded reverts of the
+new code are caught.
+
+### Added — `cmdit_err_token(h)` and `cmdit_err_value(h)`
+
+The 2026-10-14 adoption survey found seven tools that print the offending text and re-scan
+argv to get it. The text they print is one of two things:
+
+- **the token as typed:**
+  - shakti `unknown option: <tok>`, which its integration test asserts;
+  - attn11 `unknown argument X`, owl `<tok>: unknown option`, chakshu `unknown flag: <flag>`;
+  - the unknown command in hapi, phylax and agnova;
+- **the rejected value alone:** chakshu's `--sort: unknown key 'zzz'`, `--theme` and `--color`.
+
+So there are two accessors, both returning interior pointers into argv (no copy), or 0:
+
+- **`cmdit_err_token(h)`**, the argv token behind the error, matching stdlib
+  `flags_error_arg`. It covers:
+  - the unknown flag (`--bogus`, `--bogus=1`), the bundled short (`-vx`) and the unknown verb;
+  - the flag whose value was missing or rejected (`--count` in `--count abc`, or `--count=abc`
+    as typed);
+  - a positional that could not be stored;
+  - the first positional past `cmdit_require_positionals_max` / `_exact`.
+
+  It is 0 for REQUIRED_MISSING, MISSING_POSITIONAL, ARGV and an allocation NOMEM. The
+  unknown-verb token has lived at ctx `+152` since 0.3.0; that slot is now every error's.
+- **`cmdit_err_value(h)`**, the rejected value, for BAD_INT, BAD_ENUM, OUT_OF_RANGE and
+  UNEXPECTED_VALUE only: `abc` in `--count abc` or `--count=abc`, and `0` in `--loud=0`. It
+  lives at a new ctx `+176` (ctx 176 → 184 B, append-only).
+
+Both are reset at the start of every parse and dispatch, with the other error fields. Every
+error path now records all four fields through one function, `_cmdit_fail`, so no path can
+leave a field from an earlier error behind. Before this, the three error fields were written
+separately at about 20 sites.
+
+### Changed — `cmdit_print_error` names the token and value, escaped
+
+| error | 1.3.2 | 1.3.3 |
+|---|---|---|
+| UNKNOWN | `tool: unknown flag` | `tool: unknown flag: --bogus=1` |
+| BAD_INT | `tool: --count: invalid integer value` | `tool: --count: invalid integer value 'abc'` |
+| BAD_ENUM | `tool: --color: invalid value (expected a\|b)` | `tool: --color: invalid value 'purple' (expected a\|b)` |
+| OUT_OF_RANGE | `tool: --count: value out of range` | `tool: --count: value '99' out of range` |
+| UNEXPECTED_VALUE | `tool: --loud: option takes no value` | `tool: --loud: option takes no value (got '0')` |
+| BUNDLED | `tool: bundled/attached short flags not supported (use -x -y)` | `tool: -vx: bundled/attached …` |
+| TOO_MANY_POSITIONAL | `tool: too many arguments` | `tool: too many arguments: extra` |
+
+The other codes print as before.
+
+**Every argv-derived byte cmdit writes is escaped:** the token, the value, and the program name
+on the `cmdit_new(0)` path in the error line, `cmdit_help`'s Usage line and `cmdit_version`. A
+control byte (< 0x20) or DEL becomes `?`, so a token cannot put terminal escape sequences into
+the user's terminal, a log or CI output. UTF-8 passes through. This is the convention owl
+adopted for its own error lines (its audit FINDING-002). The 1.3.2 audit had accepted the raw
+echo of `argv[0]` and the unknown-verb token as Info; both are now escaped too.
+
+⚠ **stderr changes for the four consumers that call `cmdit_print_error`**: stiva (39 sites),
+ifran, commandress and dig. None of their tests pins the old text; this was checked, not
+assumed. kii and anuenue build their own lines and are unaffected.
+
+### Fixed — 1.3.2 shipped five untracked-deferral lint findings
+
+1.3.2's notes said lint was clean. `cyrius lint src/cmdit.cyr` in fact reported **5 untracked
+deferrals**, all on 1.3.2's own `help_deferred` label: the word trips cyrius's
+deferral-tracking rule. The release gate read only the last line of the lint output
+("0 warnings"); the deferral count prints on the line above it, and `cyrius audit`'s lint stage
+reports clean regardless. The label is renamed `help_handoff`, since nothing is deferred to a
+backlog; help is handed to the verb. Both counts are now checked, and both are 0 on all seven
+sources.
+
+### Tests
+
+- **+59 assertions (503 → 562):**
+  - token and value for every error code, on the parse, dispatch-before-verb and
+    dispatch-after-verb paths;
+  - pointer identity for the token, and an interior pointer for an attached value;
+  - no token or value leaking across a re-parse or a re-dispatch;
+  - each new `cmdit_print_error` line, captured exactly;
+  - escaping of an ESC sequence and DEL in a token and a value, and of a BEL in `argv[0]`
+    across the error line, `cmdit_help` and `cmdit_version`, with UTF-8 left intact.
+- **The fuzz harness gains I7.** A clean result carries no token or value. A token is always
+  pointer-identical to an argv entry, and is present for every error that has one. A value
+  points into argv, and is set exactly for the four value errors. I6 now also compares the
+  token and value on a reused handle.
+- **Mutation-proven, 18/18:** each recording site, both resets, the escaping (ESC and DEL
+  separately), the help and version name, and the new print lines. The first round left four
+  gaps (three survivors and one caught only by fuzz), each closed with a new assertion before
+  the re-run.
+- **Performance:** benches are within ±2% of 1.3.2, except `dispatch_before_verb` at +3.6%
+  (~6 ns, the `_cmdit_fail` reset at the top of every dispatch). The bundle passes 562/562 on
+  a 6.6.2 compiler.
+
 ## [1.3.2] - 2026-10-14
 
 **An audit sweep, with one security fix.** It was the first full pass over `src/cmdit.cyr`

@@ -117,7 +117,7 @@ var CMDIT_EXIT_USAGE = 2;    # usage / parse error
 enum CmditLayout {
     _CMDIT_FLAGS_CAP = 64;      # raised from flags.cyr's 32 — attn11 has ~35 flags
     _CMDIT_POS_INIT = 128;      # initial positional capacity; doubles (1.3.1)
-    _CMDIT_CTX_SZ = 176;        # 1.3.2: +168 help_deferred (1.2.2: +160 trailing_verbatim)
+    _CMDIT_CTX_SZ = 184;        # 1.3.3: +176 err_value (1.3.2: +168 help_handoff)
     _CMDIT_ENTRY_SZ = 112;      # 1.0.0: grown 104 -> 112 (metavar at +104), append-only
     _CMDIT_REPEAT_INIT = 64;    # initial per-flag repeat-list capacity; doubles (1.3.1)
     _CMDIT_VERB_CAP = 128;      # verb table rows (sit has 25 verbs; aliases are extra rows)
@@ -132,7 +132,7 @@ enum CmditLayout {
 # Informational copies of the layout above (internal, not API — ADR-0003).
 var CMDIT_FLAGS_MAX = 64;
 var CMDIT_POS_MAX = 128;     # INITIAL positional capacity; the array doubles, never drops
-var CMDIT_CTX_SIZE = 176;
+var CMDIT_CTX_SIZE = 184;
 var CMDIT_ENTRY_SIZE = 112;
 var CMDIT_REPEAT_MAX = 64;   # INITIAL per-flag repeat-list capacity; doubles, never drops
 var CMDIT_VERB_MAX = 128;
@@ -145,7 +145,7 @@ var CMDIT_ATTR_SEEN = 2;       # set by CLI parse or env fallback when a value w
 var CMDIT_ATTR_RANGE = 4;      # cmdit_range — min/max valid at +72/+80
 var CMDIT_ATTR_REPEAT = 8;     # cmdit_repeat — list at +88, count at +96
 
-# Context layout (176 B):
+# Context layout (184 B):
 #   +0  entries_ptr      : i64 array of _CMDIT_ENTRY_SZ entries
 #   +8  entries_cap      : i64 (= _CMDIT_FLAGS_CAP)
 #  +16  entries_count    : i64
@@ -165,10 +165,12 @@ var CMDIT_ATTR_REPEAT = 8;     # cmdit_repeat — list at +88, count at +96
 #  +128 verb_matched     : i64 (canonical id of the dispatched verb, -1 = none)
 #  +136 verb_argv        : i64 (compacted remainder cstr*; argv[0]=verb name; 0 = none)
 #  +144 verb_argc        : i64
-#  +152 err_verb         : i64 (cstr; offending token for CMDIT_ERR_UNKNOWN_VERB, 0 = none)
+#  +152 err_token        : i64 (cstr; the argv token behind last_error, 0 = none. 0.3.0 kept
+#                               only CMDIT_ERR_UNKNOWN_VERB's here; 1.3.3 every error's)
 #  +160 trailing_verbatim: i64 (1.2.2; a verb handle's threshold as n + 1, 0 = off)
-#  +168 help_deferred    : i64 (1.3.2; 1 when dispatch handed an auto --help/--version to
+#  +168 help_handoff     : i64 (1.3.2; 1 when dispatch handed an auto --help/--version to
 #                               the verb, so finalize skips the required check)
+#  +176 err_value        : i64 (1.3.3; cstr — the value last_error rejected, 0 = none)
 #
 # Verb row (32 B): +0 name (cstr)  +8 help (cstr)  +16 canonical_id (own index for a
 #   real verb, target index for an alias row)  +24 trailing_after (1.2.2; n + 1, 0 = none)
@@ -341,9 +343,10 @@ fn cmdit_new(prog_name): i64 {
     store64(h + 128, 0 - 1);                                                     # verb_matched (none)
     store64(h + 136, 0);                                                         # verb_argv
     store64(h + 144, 0);                                                         # verb_argc
-    store64(h + 152, 0);                                                         # err_verb
+    store64(h + 152, 0);                                                         # err_token
     store64(h + 160, 0);                                                         # trailing_verbatim (1.2.2; 0 = off)
-    store64(h + 168, 0);                                                         # help_deferred (1.3.2)
+    store64(h + 168, 0);                                                         # help_handoff (1.3.2)
+    store64(h + 176, 0);                                                         # err_value (1.3.3)
     store64(h + 80, cmdit_bool(h, 104, "help", "show this help and exit"));      # 'h'
     store64(h + 88, cmdit_bool(h, 86, "version", "print version and exit"));     # 'V'
     return h;
@@ -475,6 +478,46 @@ fn cmdit_err_flag(h): i64 {
     var ep = load64(h + 96);
     if (ep == 0) { return 0 - 1; }
     return (ep - load64(h)) / _CMDIT_ENTRY_SZ;
+}
+
+# The argv token behind the last error, exactly as typed (an interior pointer into
+# argv, not a copy), or 0. The unknown flag (`--bogus`, `--bogus=1`), the bundled
+# short (`-vx`), the unknown verb, the flag whose value was missing or rejected
+# (`--count` in `--count abc`, `--count=abc` attached), the positional that could
+# not be stored, the first positional past cmdit_require_positionals_max / _exact.
+# 0 for REQUIRED_MISSING, MISSING_POSITIONAL, ARGV and an allocation NOMEM. Mirrors
+# stdlib flags_error_arg. 1.3.3: the survey found seven tools echoing this.
+fn cmdit_err_token(h): i64 {
+    if (h == 0) { return 0; }
+    return load64(h + 152);
+}
+
+# The value the last error rejected (cstr, an interior pointer into argv), or 0:
+# set for BAD_INT, BAD_ENUM, OUT_OF_RANGE and UNEXPECTED_VALUE only — `abc` in
+# `--count abc` or `--count=abc`, `0` in `--loud=0`. Lets a tool say "unknown key
+# 'zzz'" without re-scanning argv (chakshu). 1.3.3.
+fn cmdit_err_value(h): i64 {
+    if (h == 0) { return 0; }
+    return load64(h + 176);
+}
+
+# Record the last error: its code, the entry it names (0 = none), the argv token
+# behind it and the value it rejected (0 = none). Every error path goes through
+# here so none can leave a field from an earlier error behind. Returns
+# CMDIT_RESULT_ERR for direct `return`. 1.3.3.
+fn _cmdit_fail(h, code, ep, tok, val): i64 {
+    store64(h + 56, code);
+    store64(h + 96, ep);
+    store64(h + 152, tok);
+    store64(h + 176, val);
+    return CMDIT_RESULT_ERR;
+}
+
+# 1 when `code` rejects a VALUE a flag was given (so cmdit_err_value is set).
+fn _cmdit_is_value_err(code): i64 {
+    if (code == CMDIT_ERR_BAD_INT || code == CMDIT_ERR_BAD_ENUM) { return 1; }
+    if (code == CMDIT_ERR_OUT_OF_RANGE || code == CMDIT_ERR_UNEXPECTED_VALUE) { return 1; }
+    return 0;
 }
 
 # Verb dispatch accessors (0.3.0). cmdit_verb_matched is the identify-and-return
@@ -735,9 +778,7 @@ fn cmdit_parse_argv(h, argc, argv): i64 {
     # second time carried the FIRST parse's err_entry, and cmdit_print_error /
     # cmdit_err_flag name a flag from an error that has nothing to do with the
     # one being reported. CHANGELOG [1.2.4].
-    store64(h + 56, CMDIT_ERR_NONE);
-    store64(h + 96, 0);
-    store64(h + 152, 0);
+    _cmdit_fail(h, CMDIT_ERR_NONE, 0, 0, 0);                    # 1.3.3: + err_token / err_value
     if (load64(h + 48) == 0) { if (argc > 0) { store64(h + 48, load64(argv)); } }
     var i = 1;
     var in_positional = 0;
@@ -762,8 +803,7 @@ fn cmdit_parse_argv(h, argc, argv): i64 {
         if (load8(tok) != 45 || load8(tok + 1) == 0) { as_pos = 1; }   # a non-flag, or a lone "-"
         if (as_pos == 1) {
             if (_cmdit_push_positional(h, tok) != CMDIT_ERR_NONE) {
-                store64(h + 56, CMDIT_ERR_NOMEM);
-                return CMDIT_RESULT_ERR;
+                return _cmdit_fail(h, CMDIT_ERR_NOMEM, 0, tok, 0);
             }
             i = i + 1;
             continue;
@@ -783,33 +823,29 @@ fn cmdit_parse_argv(h, argc, argv): i64 {
             var name_len = j;
             if (eq >= 0) { name_len = eq; }
             ep = _cmdit_find_long(h, name_start, name_len);
-            if (ep == 0) { store64(h + 56, CMDIT_ERR_UNKNOWN); return CMDIT_RESULT_ERR; }
+            if (ep == 0) { return _cmdit_fail(h, CMDIT_ERR_UNKNOWN, 0, tok, 0); }
             if (eq >= 0) { value_ptr = name_start + eq + 1; }
             if (value_ptr == 0 && load64(ep + 16) != CMDIT_BOOL) {
-                if (i + 1 >= argc) {
-                    store64(h + 56, CMDIT_ERR_MISSING_VALUE);
-                    store64(h + 96, ep);
-                    return CMDIT_RESULT_ERR;
-                }
+                if (i + 1 >= argc) { return _cmdit_fail(h, CMDIT_ERR_MISSING_VALUE, ep, tok, 0); }
                 value_ptr = load64(argv + (i + 1) * 8);
                 i = i + 1;
             }
         } else {
-            if (load8(tok + 2) != 0) { store64(h + 56, CMDIT_ERR_BUNDLED); return CMDIT_RESULT_ERR; }
+            if (load8(tok + 2) != 0) { return _cmdit_fail(h, CMDIT_ERR_BUNDLED, 0, tok, 0); }
             ep = _cmdit_find_short(h, load8(tok + 1));
-            if (ep == 0) { store64(h + 56, CMDIT_ERR_UNKNOWN); return CMDIT_RESULT_ERR; }
+            if (ep == 0) { return _cmdit_fail(h, CMDIT_ERR_UNKNOWN, 0, tok, 0); }
             if (load64(ep + 16) != CMDIT_BOOL) {
-                if (i + 1 >= argc) {
-                    store64(h + 56, CMDIT_ERR_MISSING_VALUE);
-                    store64(h + 96, ep);
-                    return CMDIT_RESULT_ERR;
-                }
+                if (i + 1 >= argc) { return _cmdit_fail(h, CMDIT_ERR_MISSING_VALUE, ep, tok, 0); }
                 value_ptr = load64(argv + (i + 1) * 8);
                 i = i + 1;
             }
         }
         var ar = _cmdit_apply(ep, value_ptr);
-        if (ar != CMDIT_ERR_NONE) { store64(h + 56, ar); store64(h + 96, ep); return CMDIT_RESULT_ERR; }
+        if (ar != CMDIT_ERR_NONE) {
+            var bad = 0;
+            if (_cmdit_is_value_err(ar) == 1) { bad = value_ptr; }
+            return _cmdit_fail(h, ar, ep, tok, bad);
+        }
         store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_SEEN);   # mark provided (for required/env)
         i = i + 1;
     }
@@ -895,7 +931,7 @@ fn cmdit_argv(h): i64 {
     if (load64(h + 64) != 0) { return load64(h + 72); }
     if (_cmdit_argv_arr == 0) {
         var e = _cmdit_argv_load();
-        if (e != CMDIT_ERR_NONE) { store64(h + 56, e); return 0; }
+        if (e != CMDIT_ERR_NONE) { _cmdit_fail(h, e, 0, 0, 0); return 0; }
     }
     store64(h + 64, _cmdit_argv_arr);
     store64(h + 72, _cmdit_argv_n);
@@ -968,7 +1004,7 @@ fn cmdit_finalize(h): i64 {
     _cmdit_apply_env(h);
     if (load64(h + 168) == 1) { return CMDIT_OK; }
     var rq = _cmdit_check_required(h);
-    if (rq != CMDIT_ERR_NONE) { store64(h + 56, rq); return CMDIT_RESULT_ERR; }
+    if (rq != CMDIT_ERR_NONE) { return _cmdit_fail(h, rq, load64(h + 96), 0, 0); }
     return CMDIT_OK;
 }
 
@@ -991,9 +1027,7 @@ fn cmdit_parse(h): i64 {
 fn cmdit_require_positionals(h, min): i64 {
     if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     if (load64(h + 40) >= min) { return CMDIT_OK; }
-    store64(h + 56, CMDIT_ERR_MISSING_POSITIONAL);
-    store64(h + 96, 0);
-    return CMDIT_RESULT_ERR;
+    return _cmdit_fail(h, CMDIT_ERR_MISSING_POSITIONAL, 0, 0, 0);
 }
 
 # Require AT MOST `max` positionals; count > max -> CMDIT_ERR_TOO_MANY_POSITIONAL.
@@ -1001,9 +1035,7 @@ fn cmdit_require_positionals(h, min): i64 {
 fn cmdit_require_positionals_max(h, max): i64 {
     if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     if (load64(h + 40) <= max) { return CMDIT_OK; }
-    store64(h + 56, CMDIT_ERR_TOO_MANY_POSITIONAL);
-    store64(h + 96, 0);
-    return CMDIT_RESULT_ERR;
+    return _cmdit_fail(h, CMDIT_ERR_TOO_MANY_POSITIONAL, 0, cmdit_positional(h, max), 0);   # 1.3.3: first extra
 }
 
 # Require EXACTLY `n` positionals: fewer -> CMDIT_ERR_MISSING_POSITIONAL, more ->
@@ -1011,8 +1043,8 @@ fn cmdit_require_positionals_max(h, max): i64 {
 fn cmdit_require_positionals_exact(h, n): i64 {
     if (h == 0) { return CMDIT_RESULT_ERR; }                      # 1.3.2: see _cmdit_h0
     var c = load64(h + 40);
-    if (c < n) { store64(h + 56, CMDIT_ERR_MISSING_POSITIONAL); store64(h + 96, 0); return CMDIT_RESULT_ERR; }
-    if (c > n) { store64(h + 56, CMDIT_ERR_TOO_MANY_POSITIONAL); store64(h + 96, 0); return CMDIT_RESULT_ERR; }
+    if (c < n) { return _cmdit_fail(h, CMDIT_ERR_MISSING_POSITIONAL, 0, 0, 0); }
+    if (c > n) { return _cmdit_fail(h, CMDIT_ERR_TOO_MANY_POSITIONAL, 0, cmdit_positional(h, n), 0); }
     return CMDIT_OK;
 }
 
@@ -1195,21 +1227,26 @@ fn _cmdit_disp_apply_flag(h, argc, argv, i): i64 {
         # 1.3.2: a short token with more after the letter (`-vx`, `-ofile`) is
         # BUNDLED, as cmdit_parse_argv says; it reported UNKNOWN, even for -o
         # registered. CHANGELOG [1.3.2].
-        if (load8(tok + 1) != 45 && load8(tok + 2) != 0) { store64(h + 56, CMDIT_ERR_BUNDLED); return 0 - 1; }
-        store64(h + 56, CMDIT_ERR_UNKNOWN);
+        if (load8(tok + 1) != 45 && load8(tok + 2) != 0) { _cmdit_fail(h, CMDIT_ERR_BUNDLED, 0, tok, 0); return 0 - 1; }
+        _cmdit_fail(h, CMDIT_ERR_UNKNOWN, 0, tok, 0);
         return 0 - 1;
     }
     var value_ptr = _cmdit_disp_val;
     var ni = i + 1;
     if (value_ptr == 0) {
         if (load64(ep + 16) != CMDIT_BOOL) {
-            if (i + 1 >= argc) { store64(h + 56, CMDIT_ERR_MISSING_VALUE); store64(h + 96, ep); return 0 - 1; }
+            if (i + 1 >= argc) { _cmdit_fail(h, CMDIT_ERR_MISSING_VALUE, ep, tok, 0); return 0 - 1; }
             value_ptr = load64(argv + (i + 1) * 8);
             ni = i + 2;
         }
     }
     var ar = _cmdit_apply(ep, value_ptr);
-    if (ar != CMDIT_ERR_NONE) { store64(h + 56, ar); store64(h + 96, ep); return 0 - 1; }
+    if (ar != CMDIT_ERR_NONE) {
+        var bad = 0;
+        if (_cmdit_is_value_err(ar) == 1) { bad = value_ptr; }
+        _cmdit_fail(h, ar, ep, tok, bad);
+        return 0 - 1;
+    }
     store64(ep + 48, load64(ep + 48) | CMDIT_ATTR_SEEN);
     return ni;
 }
@@ -1229,19 +1266,17 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
     # second time carried the FIRST parse's err_entry, and cmdit_print_error /
     # cmdit_err_flag name a flag from an error that has nothing to do with the
     # one being reported. CHANGELOG [1.2.4].
-    store64(h + 56, CMDIT_ERR_NONE);
-    store64(h + 96, 0);
-    store64(h + 152, 0);
-    store64(h + 168, 0);                                          # 1.3.2: help_deferred
+    _cmdit_fail(h, CMDIT_ERR_NONE, 0, 0, 0);                    # 1.3.3: + err_token / err_value
+    store64(h + 168, 0);                                          # 1.3.2: help_handoff
     if (load64(h + 48) == 0) { if (argc > 0) { store64(h + 48, load64(argv)); } }
     if (argc < 0) { argc = 0; }                                   # 1.2.4: else alloc(<=0) -> 0 -> null write below
     # 1.3.2: and an argc so large that (argc + 1) * 8 wraps. 2^61 wrapped to an
     # 8-byte remainder that the loop then wrote past. CHANGELOG [1.3.2].
-    if (argc >= _CMDIT_SLOTS_MAX) { store64(h + 56, CMDIT_ERR_NOMEM); return CMDIT_RESULT_ERR; }
+    if (argc >= _CMDIT_SLOTS_MAX) { return _cmdit_fail(h, CMDIT_ERR_NOMEM, 0, 0, 0); }
     var rem = alloc((argc + 1) * 8);
     # 1.2.4: OOM. 1.3.2: it returned RESULT_ERR with cmdit_error still NONE, the
     # one error path that set no code; it is CMDIT_ERR_NOMEM now. CHANGELOG [1.3.2].
-    if (rem == 0) { store64(h + 56, CMDIT_ERR_NOMEM); return CMDIT_RESULT_ERR; }
+    if (rem == 0) { return _cmdit_fail(h, CMDIT_ERR_NOMEM, 0, 0, 0); }
     var rn = 0;
     var verb_found = 0;
     var no_more_flags = 0;
@@ -1275,7 +1310,7 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
                 i = r; continue;
             }
             var vid = _cmdit_find_verb(h, tok);
-            if (vid < 0) { store64(h + 152, tok); store64(h + 56, CMDIT_ERR_UNKNOWN_VERB); return CMDIT_RESULT_ERR; }
+            if (vid < 0) { return _cmdit_fail(h, CMDIT_ERR_UNKNOWN_VERB, 0, tok, 0); }
             store64(h + 128, vid);
             store64(rem + rn * 8, tok); rn = rn + 1;          # remainder[0] = verb name
             verb_found = 1;
@@ -1302,7 +1337,7 @@ fn cmdit_dispatch_argv(h, argc, argv): i64 {
                     if (r2 < 0) { return CMDIT_RESULT_ERR; }
                     i = r2; continue;
                 }
-                store64(h + 168, 1);                              # 1.3.2: help/version deferred to the verb
+                store64(h + 168, 1);                              # 1.3.2: help/version handed to the verb
             }
         }
         store64(rem + rn * 8, tok); rn = rn + 1;              # defer to the verb's scope
@@ -1341,7 +1376,7 @@ fn cmdit_dispatch(h): i64 {
 # cmdit_dispatch_argv(vh, cmdit_verb_argc(h), cmdit_verb_argv(h)) instead).
 fn cmdit_parse_verb(vh, h): i64 {
     if (vh == 0) { return CMDIT_RESULT_ERR; }                     # 1.3.2: see _cmdit_h0
-    if (h == 0) { store64(vh + 56, CMDIT_ERR_NOMEM); return CMDIT_RESULT_ERR; }
+    if (h == 0) { return _cmdit_fail(vh, CMDIT_ERR_NOMEM, 0, 0, 0); }
     # 1.2.2: carry the dispatcher's trailing-verbatim mark onto the verb handle,
     # so the consumer declares it ONCE (on the top-level handle, where the verb
     # is registered) rather than having to repeat it per verb handle — and so it
@@ -1376,6 +1411,45 @@ fn cmdit_basename(path): i64 {
 
 fn _cmdit_eprint(s): i64 { syscall(1, 2, s, strlen(s)); return 0; }   # write -> stderr
 fn _cmdit_oprint(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }   # write -> stdout
+
+# Write an argv-derived string to `fd` with every control byte (< 0x20) and DEL
+# shown as '?', so a token cannot put terminal escape sequences into whatever reads
+# the output (a terminal, a log, CI). UTF-8 bytes (>= 0x80) pass through, so
+# non-ASCII names stay legible. The convention owl adopted for its own error lines
+# (its audit FINDING-002). Runs of safe bytes go out in one write. 1.3.3.
+fn _cmdit_print_esc(fd, s): i64 {
+    if (s == 0) { return 0; }
+    var i = 0;
+    var run = 0;
+    while (load8(s + i) != 0) {
+        var c = load8(s + i);
+        if (c < 32 || c == 127) {
+            if (i > run) { syscall(1, fd, s + run, i - run); }
+            syscall(1, fd, "?", 1);
+            run = i + 1;
+        }
+        i = i + 1;
+    }
+    if (i > run) { syscall(1, fd, s + run, i - run); }
+    return 0;
+}
+
+# ": <text>" to stderr, escaped, when `s` is set — the offending-token tail.
+fn _cmdit_eprint_tail(s): i64 {
+    if (s == 0) { return 0; }
+    _cmdit_eprint(": ");
+    _cmdit_print_esc(2, s);
+    return 0;
+}
+
+# " '<text>'" to stderr, escaped, when `s` is set — a rejected value, quoted.
+fn _cmdit_eprint_quoted(s): i64 {
+    if (s == 0) { return 0; }
+    _cmdit_eprint(" '");
+    _cmdit_print_esc(2, s);
+    _cmdit_eprint("'");
+    return 0;
+}
 
 # Generated flag-list rows to stderr — just the "  -x, --long <type>\thelp" lines,
 # with NO "Usage:" / "Options:" header and NO verb list. For tools that frame their
@@ -1438,7 +1512,7 @@ fn cmdit_help(h): i64 {
     if (h == 0) { return 0; }                                     # 1.3.2: see _cmdit_h0
     var prog = load64(h + 48);
     _cmdit_eprint("Usage: ");
-    if (prog != 0) { _cmdit_eprint(prog); }
+    _cmdit_print_esc(2, prog);                                    # 1.3.3: argv[0] on the cmdit_new(0) path
     _cmdit_eprint(" [options] [args]\n\nOptions:\n");
     cmdit_help_flags(h);
     if (load64(h + 104) != 0) { cmdit_verbs_help(h); }     # append the verb list, if any
@@ -1475,7 +1549,7 @@ fn cmdit_verbs_help(h): i64 {
 fn cmdit_version(h, version_str): i64 {
     var prog = 0;
     if (h != 0) { prog = load64(h + 48); }                        # 1.3.2: see _cmdit_h0
-    if (prog != 0) { _cmdit_oprint(prog); _cmdit_oprint(" "); }
+    if (prog != 0) { _cmdit_print_esc(1, prog); _cmdit_oprint(" "); }   # 1.3.3: escaped (argv[0])
     if (version_str != 0) { _cmdit_oprint(version_str); }
     _cmdit_oprint("\n");
     return CMDIT_EXIT_OK;
@@ -1503,36 +1577,55 @@ fn _cmdit_eprint_flag(ep): i64 {
 # Decode the last error into a standard "<prog>: [<flag>: ]<message>" stderr line.
 # Absorbs the FlagErr->message switch kii/anuenue/bannermanor copy verbatim, and
 # (0.2.0) names the offending flag for value/modifier errors + lists the enum set.
-# UNKNOWN stays generic (the token is, by definition, not a registered flag).
-# Returns CMDIT_EXIT_USAGE for direct `return`.
+#
+# 1.3.3: the line also carries what the user typed (cmdit_err_token /
+# cmdit_err_value): `unknown flag: --bogus`, `--count: invalid integer value
+# 'abc'`, `-vx: bundled/...`, `too many arguments: extra`. Every argv-derived byte
+# (the program name on the cmdit_new(0) path, the token, the value) is written
+# through _cmdit_print_esc. CHANGELOG [1.3.3]. Returns CMDIT_EXIT_USAGE for direct
+# `return`.
 fn cmdit_print_error(h): i64 {
     var prog = 0;
     var e = CMDIT_ERR_NOMEM;                                      # 1.3.2: a 0 handle is cmdit_new's OOM
     var ep = 0;
-    if (h != 0) { prog = load64(h + 48); e = load64(h + 56); ep = load64(h + 96); }
-    if (prog != 0) { _cmdit_eprint(prog); _cmdit_eprint(": "); }
-    if (e != CMDIT_ERR_UNKNOWN) { _cmdit_eprint_flag(ep); }
-    if (e == CMDIT_ERR_UNKNOWN) { _cmdit_eprint("unknown flag"); }
+    var tok = 0;
+    var val = 0;
+    if (h != 0) {
+        prog = load64(h + 48);
+        e = load64(h + 56);
+        ep = load64(h + 96);
+        tok = load64(h + 152);
+        val = load64(h + 176);
+    }
+    if (prog != 0) { _cmdit_print_esc(2, prog); _cmdit_eprint(": "); }
+    if (e == CMDIT_ERR_BUNDLED) {
+        if (tok != 0) { _cmdit_print_esc(2, tok); _cmdit_eprint(": "); }   # the token is the subject
+    } elif (e != CMDIT_ERR_UNKNOWN) { _cmdit_eprint_flag(ep); }
+    if (e == CMDIT_ERR_UNKNOWN) { _cmdit_eprint("unknown flag"); _cmdit_eprint_tail(tok); }
     elif (e == CMDIT_ERR_MISSING_VALUE) { _cmdit_eprint("missing value"); }
-    elif (e == CMDIT_ERR_BAD_INT) { _cmdit_eprint("invalid integer value"); }
+    elif (e == CMDIT_ERR_BAD_INT) { _cmdit_eprint("invalid integer value"); _cmdit_eprint_quoted(val); }
     elif (e == CMDIT_ERR_BUNDLED) { _cmdit_eprint("bundled/attached short flags not supported (use -x -y)"); }
     elif (e == CMDIT_ERR_REQUIRED_MISSING) { _cmdit_eprint("required flag missing"); }
     elif (e == CMDIT_ERR_BAD_ENUM) {
         _cmdit_eprint("invalid value");
+        _cmdit_eprint_quoted(val);
         if (ep != 0) {
             var ch = load64(ep + 56);
             if (ch != 0) { _cmdit_eprint(" (expected "); _cmdit_eprint(ch); _cmdit_eprint(")"); }
         }
     }
-    elif (e == CMDIT_ERR_OUT_OF_RANGE) { _cmdit_eprint("value out of range"); }
-    elif (e == CMDIT_ERR_UNKNOWN_VERB) {
-        _cmdit_eprint("unknown command");
-        var ev = load64(h + 152);
-        if (ev != 0) { _cmdit_eprint(": "); _cmdit_eprint(ev); }
+    elif (e == CMDIT_ERR_OUT_OF_RANGE) {
+        _cmdit_eprint("value");
+        _cmdit_eprint_quoted(val);
+        _cmdit_eprint(" out of range");
     }
+    elif (e == CMDIT_ERR_UNKNOWN_VERB) { _cmdit_eprint("unknown command"); _cmdit_eprint_tail(tok); }
     elif (e == CMDIT_ERR_MISSING_POSITIONAL) { _cmdit_eprint("missing required argument"); }
-    elif (e == CMDIT_ERR_TOO_MANY_POSITIONAL) { _cmdit_eprint("too many arguments"); }
-    elif (e == CMDIT_ERR_UNEXPECTED_VALUE) { _cmdit_eprint("option takes no value"); }
+    elif (e == CMDIT_ERR_TOO_MANY_POSITIONAL) { _cmdit_eprint("too many arguments"); _cmdit_eprint_tail(tok); }
+    elif (e == CMDIT_ERR_UNEXPECTED_VALUE) {
+        _cmdit_eprint("option takes no value");
+        if (val != 0) { _cmdit_eprint(" (got"); _cmdit_eprint_quoted(val); _cmdit_eprint(")"); }
+    }
     elif (e == CMDIT_ERR_NOMEM) { _cmdit_eprint("out of memory"); }
     elif (e == CMDIT_ERR_ARGV) { _cmdit_eprint("could not read the full command line"); }
     else { _cmdit_eprint("argument error"); }

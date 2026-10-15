@@ -5,15 +5,16 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.3.2 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.3.3 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
 faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`); 1.3.2 is an
-audit sweep with a completion-script security fix. **1.2.4 is a security release** — the
-completion generator interpolated the program name, which on the `cmdit_new(0)` path comes
-from `argv[0]`, raw into the scripts it emits; it also closes three memory-safety/contract
-defects. No API change. **Consumers on any earlier version that generate completions should
-update.**
+audit sweep with a completion-script security fix; 1.3.3 adds `cmdit_err_token` /
+`cmdit_err_value` and error lines that name the offending text. **1.2.4 is a security
+release** — the completion generator interpolated the program name, which on the
+`cmdit_new(0)` path comes from `argv[0]`, raw into the scripts it emits; it also closes
+three memory-safety/contract defects. No API change. **Consumers on any earlier version that
+generate completions should update.**
 **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
@@ -42,7 +43,9 @@ codes) plus the three things every structured consumer copies by hand.
 - **Generated help** — `cmdit_help` prints `Usage:` + the flag list from the table
   (kills hand-written-help drift); `cmdit_version` centralizes the version line.
 - **Standard errors + exit codes** — `cmdit_print_error` + `CMDIT_EXIT_OK/RUN/USAGE`
-  (the `0`/`1`/`2` AGNOS userland convention as named constants).
+  (the `0`/`1`/`2` AGNOS userland convention as named constants). The error line names
+  what the user typed (`tool: unknown flag: --bogus`, `tool: --count: invalid integer value
+  'abc'`), with control bytes in any argv-derived text shown as `?` (1.3.3).
 - **Pure, testable core** — `cmdit_parse_argv(h, argc, argv)` never reads `/proc`
   or the environment, so tests drive synthetic argv. **Escape hatch**
   `cmdit_raw_argv` for non-getopt grammars (e.g. `dig`'s `@server`).
@@ -154,7 +157,9 @@ constants, not API (do not depend on their values).
   `cmdit_verb_argv`, `cmdit_raw_argv` / `cmdit_raw_argc`, `cmdit_basename`.
 - **Validate / errors:** `cmdit_require_positionals` / `_max` / `_exact`,
   `cmdit_error` (last `CmditErr`, `CMDIT_ERR_NONE` 0 … `CMDIT_ERR_ARGV` 13),
-  `cmdit_err_flag` (offending flag index).
+  `cmdit_err_flag` (offending flag index), `cmdit_err_token` (the argv token behind the
+  error, as typed) and `cmdit_err_value` (the value a BAD_INT / BAD_ENUM / OUT_OF_RANGE /
+  UNEXPECTED_VALUE rejected) — both 1.3.3, interior pointers into argv or 0.
 - **Output:** `cmdit_help` (Usage + flag list) / `cmdit_help_flags` (table-only rows,
   for tools framing their own help) / `cmdit_verbs_help`, `cmdit_version`, `cmdit_print_error`.
 - **Result codes:** `CMDIT_OK` / `CMDIT_HELP` / `CMDIT_VERSION` / `CMDIT_RESULT_ERR`.
@@ -241,6 +246,9 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   immutable layout constants, the zsh/fish name whitelist, five verb-dispatch contract fixes,
   and a ~3× faster verb-tool construction. **503/503 tests**, 33/33 repairs mutation-proven;
   [audit report](docs/audit/2026-10-14-audit.md).
+- **1.3.3** — `cmdit_err_token` / `cmdit_err_value`: the argv token and the rejected value
+  behind the last error (seven tools re-scanned argv for these). `cmdit_print_error` now
+  prints them, with argv-derived text escaped. **562/562 tests**, 18/18 mutation-proven.
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -249,6 +257,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (503/503)
+cyrius test                                          # run tests/*.tcyr  (562/562)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

@@ -64,6 +64,44 @@ fn capture_print_error(h, buf, cap): i64 {
     return n;
 }
 
+# 1.3.3: capture cmdit_help (fd 2) and cmdit_version (fd 1) output, as above.
+fn capture_help(h, buf, cap): i64 {
+    var pfd[8];
+    if (syscall(22, &pfd) != 0) { return 0 - 1; }
+    var rfd = load32(&pfd);
+    var wfd = load32(&pfd + 4);
+    var saved = syscall(32, 2);
+    syscall(33, wfd, 2);
+    cmdit_help(h);
+    syscall(33, saved, 2);
+    syscall(3, wfd);
+    syscall(3, saved);
+    var n = syscall(0, rfd, buf, cap - 1);
+    syscall(3, rfd);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return n;
+}
+
+# Capture cmdit_version(h, v)'s stdout into buf.
+fn capture_version(h, v, buf, cap): i64 {
+    var pfd[8];
+    if (syscall(22, &pfd) != 0) { return 0 - 1; }
+    var rfd = load32(&pfd);
+    var wfd = load32(&pfd + 4);
+    var saved = syscall(32, 1);
+    syscall(33, wfd, 1);
+    cmdit_version(h, v);
+    syscall(33, saved, 1);
+    syscall(3, wfd);
+    syscall(3, saved);
+    var n = syscall(0, rfd, buf, cap - 1);
+    syscall(3, rfd);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return n;
+}
+
 # 1 when `hay` contains `needle` (both NUL-terminated).
 fn contains(hay, needle): i64 {
     var i = 0;
@@ -1144,6 +1182,7 @@ fn main() {
     assert(cmdit_parse_argv(nrh, 3, nrav) == CMDIT_RESULT_ERR, "refused repeat growth fails the parse");
     assert(cmdit_error(nrh) == CMDIT_ERR_NOMEM, "repeat growth failure -> NOMEM");
     assert(cmdit_err_flag(nrh) == rf, "repeat NOMEM names its flag");
+    assert(cmdit_err_value(nrh) == 0, "repeat NOMEM rejected no value (1.3.3)");
 
     test_group("1.3.1 a bool given =value is rejected (`--loud=0` used to turn it ON)");
     var bh = cmdit_new("prog");
@@ -1156,7 +1195,8 @@ fn main() {
     assert(cmdit_seen(bh, bl) == 0, "and not marked seen");
     var bbuf = alloc(256);
     capture_print_error(bh, bbuf, 256);
-    assert(cstreq(bbuf, "prog: --loud: option takes no value\n") == 1, "renders `--loud: option takes no value`");
+    assert(cstreq(bbuf, "prog: --loud: option takes no value (got '0')\n") == 1,
+      "renders `--loud: option takes no value (got '0')`");
     var bh2 = cmdit_new("prog");
     cmdit_bool(bh2, 108, "loud", "");
     store64(bav + 8, "--loud=");
@@ -1513,6 +1553,166 @@ fn main() {
     assert(contains(dsbuf, "local valueflags='--root -r -j'") == 1, "bash skip set has --root -r -j");
     capture_completions(svh, "zsh", dsbuf, 16384);
     assert(contains(dsbuf, "valueflags=( --root -r -j )") == 1, "zsh skip set has --root -r -j");
+
+    test_group("1.3.3 cmdit_err_token / cmdit_err_value name what the user typed");
+    # Seven tools echoed this by re-scanning argv. The token is an interior pointer
+    # into argv (no copy); the value too, inside the token when attached.
+    var eb = alloc(512);
+    var eh1 = cmdit_new("prog");
+    cmdit_bool(eh1, 118, "loud", "");
+    var eav = alloc(4 * 8);
+    store64(eav, "prog"); store64(eav + 8, "--bogus=1");
+    assert(cmdit_parse_argv(eh1, 2, eav) == CMDIT_RESULT_ERR, "unknown long flag fails");
+    assert(cmdit_err_token(eh1) == load64(eav + 8), "UNKNOWN: token is the argv entry itself");
+    assert(cmdit_err_value(eh1) == 0, "UNKNOWN: no value");
+    capture_print_error(eh1, eb, 512);
+    assert(cstreq(eb, "prog: unknown flag: --bogus=1\n") == 1, "renders `unknown flag: --bogus=1`");
+    var eh2 = cmdit_new("prog");
+    cmdit_bool(eh2, 118, "loud", "");
+    store64(eav + 8, "-vx");
+    assert(cmdit_parse_argv(eh2, 2, eav) == CMDIT_RESULT_ERR, "bundled short fails");
+    assert(cmdit_err_token(eh2) == load64(eav + 8), "BUNDLED: token is -vx");
+    capture_print_error(eh2, eb, 512);
+    assert(cstreq(eb, "prog: -vx: bundled/attached short flags not supported (use -x -y)\n") == 1,
+      "renders `-vx: bundled/...`");
+    var eh3 = cmdit_new("prog");
+    var ec3 = cmdit_int(eh3, 99, "count", 1, "");
+    cmdit_range(eh3, ec3, 1, 10);
+    store64(eav + 8, "--count"); store64(eav + 16, "abc");
+    assert(cmdit_parse_argv(eh3, 3, eav) == CMDIT_RESULT_ERR, "bad int fails");
+    assert(cmdit_err_token(eh3) == load64(eav + 8), "BAD_INT: token is the flag as typed");
+    assert(cmdit_err_value(eh3) == load64(eav + 16), "BAD_INT: value is the separate argv entry");
+    capture_print_error(eh3, eb, 512);
+    assert(cstreq(eb, "prog: --count: invalid integer value 'abc'\n") == 1, "renders the rejected value, quoted");
+    var eh4 = cmdit_new("prog");
+    var ec4 = cmdit_int(eh4, 99, "count", 1, "");
+    cmdit_range(eh4, ec4, 1, 10);
+    var eatt = "--count=99";
+    store64(eav + 8, eatt);
+    assert(cmdit_parse_argv(eh4, 2, eav) == CMDIT_RESULT_ERR, "out of range fails");
+    assert(cmdit_err_token(eh4) == eatt, "OUT_OF_RANGE: token is the attached form");
+    assert(cmdit_err_value(eh4) == eatt + 8, "OUT_OF_RANGE: value points inside the token");
+    capture_print_error(eh4, eb, 512);
+    assert(cstreq(eb, "prog: --count: value '99' out of range\n") == 1, "renders `value '99' out of range`");
+    var eh5 = cmdit_new("prog");
+    cmdit_enum(eh5, 0, "color", "auto", "auto|always|never", "");
+    store64(eav + 8, "--color"); store64(eav + 16, "purple");
+    assert(cmdit_parse_argv(eh5, 3, eav) == CMDIT_RESULT_ERR, "bad enum fails");
+    assert(cstreq(cmdit_err_value(eh5), "purple") == 1, "BAD_ENUM: value");
+    capture_print_error(eh5, eb, 512);
+    assert(cstreq(eb, "prog: --color: invalid value 'purple' (expected auto|always|never)\n") == 1,
+      "renders the value and the choice set");
+    var eh6 = cmdit_new("prog");
+    cmdit_str(eh6, 110, "name", 0, "");
+    store64(eav + 8, "-n");
+    assert(cmdit_parse_argv(eh6, 2, eav) == CMDIT_RESULT_ERR, "missing value fails");
+    assert(cmdit_err_token(eh6) == load64(eav + 8), "MISSING_VALUE: token is the flag");
+    assert(cmdit_err_value(eh6) == 0, "MISSING_VALUE: no value");
+    capture_print_error(eh6, eb, 512);
+    assert(cstreq(eb, "prog: --name: missing value\n") == 1, "MISSING_VALUE line is unchanged");
+    var eh6b = cmdit_new("prog");
+    cmdit_str(eh6b, 110, "name", 0, "");
+    store64(eav + 8, "--name");
+    assert(cmdit_parse_argv(eh6b, 2, eav) == CMDIT_RESULT_ERR, "long missing value fails");
+    assert(cmdit_err_token(eh6b) == load64(eav + 8), "MISSING_VALUE (long): token is --name");
+    var eh7 = cmdit_new("prog");
+    var er7 = cmdit_str(eh7, 0, "handle", 0, "");
+    cmdit_required(eh7, er7);
+    assert(cmdit_parse_argv(eh7, 1, eav) == CMDIT_OK, "an empty parse");
+    assert(cmdit_finalize(eh7) == CMDIT_RESULT_ERR, "required missing");
+    assert(cmdit_err_token(eh7) == 0 && cmdit_err_value(eh7) == 0, "REQUIRED_MISSING: no token, no value");
+    var eh8 = cmdit_new("prog");
+    store64(eav + 8, "a"); store64(eav + 16, "b"); store64(eav + 24, "c");
+    assert(cmdit_parse_argv(eh8, 4, eav) == CMDIT_OK, "three positionals");
+    assert(cmdit_require_positionals_max(eh8, 1) == CMDIT_RESULT_ERR, "max 1 fails");
+    assert(cmdit_err_token(eh8) == load64(eav + 16), "TOO_MANY: token is the first extra positional");
+    capture_print_error(eh8, eb, 512);
+    assert(cstreq(eb, "prog: too many arguments: b\n") == 1, "renders `too many arguments: b`");
+    assert(cmdit_require_positionals_exact(eh8, 2) == CMDIT_RESULT_ERR, "exact 2 fails");
+    assert(cmdit_err_token(eh8) == load64(eav + 24), "exact: the first extra is c");
+    assert(cmdit_require_positionals(eh8, 5) == CMDIT_RESULT_ERR, "min 5 fails");
+    assert(cmdit_err_token(eh8) == 0, "MISSING_POSITIONAL: no token");
+    # The dispatcher: a global before and after the verb, and an unknown verb.
+    var ed = cmdit_new("prog");
+    cmdit_int(ed, 106, "jobs", 1, "");
+    cmdit_verb(ed, "go", "");
+    store64(eav + 8, "--jobs"); store64(eav + 16, "x"); store64(eav + 24, "go");
+    assert(cmdit_dispatch_argv(ed, 4, eav) == CMDIT_RESULT_ERR, "global bad int before the verb");
+    assert(cmdit_err_token(ed) == load64(eav + 8), "dispatch: token is the global flag");
+    assert(cmdit_err_value(ed) == load64(eav + 16), "dispatch: value is x");
+    var ed2 = cmdit_new("prog");
+    cmdit_int(ed2, 106, "jobs", 1, "");
+    cmdit_verb(ed2, "go", "");
+    var edatt = "--jobs=y";
+    store64(eav + 8, "go"); store64(eav + 16, edatt);
+    assert(cmdit_dispatch_argv(ed2, 3, eav) == CMDIT_RESULT_ERR, "global bad int after the verb");
+    assert(cmdit_err_value(ed2) == edatt + 7, "after the verb: value inside the attached token");
+    var ed3 = cmdit_new("prog");
+    cmdit_verb(ed3, "go", "");
+    store64(eav + 8, "bogus");
+    assert(cmdit_dispatch_argv(ed3, 2, eav) == CMDIT_RESULT_ERR, "unknown verb");
+    assert(cmdit_err_token(ed3) == load64(eav + 8), "UNKNOWN_VERB: token (the 0.3.0 slot, now public)");
+    var ed4 = cmdit_new("prog");
+    cmdit_verb(ed4, "go", "");
+    store64(eav + 8, "--nope"); store64(eav + 16, "go");
+    assert(cmdit_dispatch_argv(ed4, 3, eav) == CMDIT_RESULT_ERR, "unknown global before the verb");
+    assert(cmdit_err_token(ed4) == load64(eav + 8), "dispatch UNKNOWN: token is --nope");
+    store64(eav + 8, "go"); store64(eav + 16, "x");
+    assert(cmdit_dispatch_argv(ed4, 3, eav) == CMDIT_OK, "a clean dispatch on the same handle");
+    assert(cmdit_err_token(ed4) == 0, "no token leaks across dispatches");
+    # A clean parse on a handle whose last parse failed leaves no token behind.
+    var er = cmdit_new("prog");
+    cmdit_bool(er, 118, "loud", "");
+    store64(eav + 8, "--nope");
+    cmdit_parse_argv(er, 2, eav);
+    assert(cmdit_err_token(er) != 0, "first parse records a token");
+    store64(eav + 8, "--loud");
+    assert(cmdit_parse_argv(er, 2, eav) == CMDIT_OK, "second parse is clean");
+    assert(cmdit_err_token(er) == 0 && cmdit_err_value(er) == 0, "no token or value leaks across parses");
+    # A positional the array could not store is the token (as in stdlib).
+    var epn = cmdit_new("prog");
+    store64(epn + 32, 2305843009213693953);
+    store64(epn + 40, 2305843009213693953);
+    store64(eav + 8, "x");
+    assert(cmdit_parse_argv(epn, 2, eav) == CMDIT_RESULT_ERR, "positional growth refused");
+    assert(cmdit_err_token(epn) == load64(eav + 8), "NOMEM: token is the positional");
+    assert(cmdit_err_token(0) == 0 && cmdit_err_value(0) == 0, "a 0 handle has neither");
+
+    test_group("1.3.3 argv-derived text is escaped in errors, help and version");
+    # ESC in a token would otherwise put terminal sequences into the user's stderr.
+    var esct = alloc(16);                          # "--b" ESC "[31m" + UTF-8 "é"
+    store8(esct, 45); store8(esct + 1, 45); store8(esct + 2, 98); store8(esct + 3, 27);
+    store8(esct + 4, 91); store8(esct + 5, 51); store8(esct + 6, 49); store8(esct + 7, 109);
+    store8(esct + 8, 195); store8(esct + 9, 169); store8(esct + 10, 0);
+    var exh = cmdit_new("prog");
+    store64(eav + 8, esct);
+    assert(cmdit_parse_argv(exh, 2, eav) == CMDIT_RESULT_ERR, "a hostile unknown flag");
+    capture_print_error(exh, eb, 512);
+    var eexp = alloc(64);                          # "prog: unknown flag: --b?[31m" "é" "\n"
+    var ek = 0;
+    var epfx = "prog: unknown flag: --b?[31m";
+    while (load8(epfx + ek) != 0) { store8(eexp + ek, load8(epfx + ek)); ek = ek + 1; }
+    store8(eexp + ek, 195); store8(eexp + ek + 1, 169); store8(eexp + ek + 2, 10); store8(eexp + ek + 3, 0);
+    assert(cstreq(eb, eexp) == 1, "ESC becomes ?, UTF-8 passes through");
+    var exv = alloc(8);                            # value "a" DEL "b"
+    store8(exv, 97); store8(exv + 1, 127); store8(exv + 2, 98); store8(exv + 3, 0);
+    var exh2 = cmdit_new("prog");
+    cmdit_int(exh2, 99, "count", 1, "");
+    store64(eav + 8, "-c"); store64(eav + 16, exv);
+    cmdit_parse_argv(exh2, 3, eav);
+    capture_print_error(exh2, eb, 512);
+    assert(cstreq(eb, "prog: --count: invalid integer value 'a?b'\n") == 1, "DEL in a value becomes ?");
+    var exn = alloc(8);                            # program name "t" BEL
+    store8(exn, 116); store8(exn + 1, 7); store8(exn + 2, 0);
+    var exh3 = cmdit_new(exn);
+    store64(eav + 8, "--nope");
+    cmdit_parse_argv(exh3, 2, eav);
+    capture_print_error(exh3, eb, 512);
+    assert(cstreq(eb, "t?: unknown flag: --nope\n") == 1, "argv[0] is escaped in the error line");
+    capture_help(exh3, eb, 512);
+    assert(contains(eb, "Usage: t? [options]") == 1, "and in help");
+    capture_version(exh3, "1.0", eb, 512);
+    assert(cstreq(eb, "t? 1.0\n") == 1, "and in --version");
 
     return assert_summary();
 }
