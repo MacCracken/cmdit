@@ -5,6 +5,12 @@
 
 ## Version
 
+**1.3.1** — built 2026-10-14. **Stdlib parity.** Positionals and repeat lists double on demand
+instead of silently dropping past 128 / 64, which reverses audit SEC-3. A bool given `=value`
+is `CMDIT_ERR_UNEXPECTED_VALUE` (11) instead of turning the flag on. A refused growth is
+`CMDIT_ERR_NOMEM` (12). Both defects were fixed in the stdlib in 6.6.5, and the 1.3.0
+adoption survey found cmdit still had them. **357 → 400 assertions**, 10/10 mutants caught.
+
 **1.3.0** — built 2026-10-14. Toolchain pin `6.6.20` → `6.7.9` (`lib/` byte-identical to
 `6.7.9/lib`). **`cmdit_new` ~6× faster**: 1.97 µs, was ~11.5, from zeroing the entry table
 word-at-a-time. **`cmdit_argv` linear on Linux**: it was quadratic, re-walking
@@ -139,7 +145,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **357/357**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+- `tests/cmdit.tcyr` — **400/400**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
   `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
@@ -153,7 +159,8 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   see [`benchmarks.md`](../benchmarks.md).
 - `tests/cmdit.fcyr` — **real fuzz harness** (1.3.0; it was a stub before). 16 seeds × 400
   argvs through `cmdit_parse_argv` and `cmdit_dispatch_argv`, mixing a 48-token pool with
-  random bytes and checking six contract invariants (I1–I6 in its header). Mutation-proven:
+  random bytes and checking six contract invariants (I1–I6 in its header). Since 1.3.1, every
+  50th argv is long (up to 400 tokens), so the growth paths past 128 / 64 are fuzzed too. Mutation-proven:
   8 of 9 seeded source bugs caught. The survivor (the remainder slice's NULL terminator) is
   unobservable because fresh `alloc` memory is already zero. ~0.7 s.
 - **Poison gates:** `cyrius fuzz --poison=ab` and `CYRIUS_POISON=1 cyrius test` both pass, so
@@ -196,23 +203,26 @@ None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
 
 ## Next
 
-v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.0 is a speed and
-test-coverage release with no behaviour change.
+v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.1 closes the two
+stdlib-parity defects the adoption survey found.
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.3.0 are worth taking but not urgent.** The gain is the ~9.5 µs
-  `cmdit_new` saving per handle, which matters only for tools that build many handles (verb
-  re-entry builds one per matched verb). The bundle compiles on consumer pins as old as 6.6.2.
+- **Consumer re-pins to 1.3.1 are recommended.** They bring the two misparse fixes, the
+  ~9.5 µs `cmdit_new` saving, and the linear `cmdit_argv`. None of the six breaks. kii and
+  anuenue's `cmdit_error` switches would print their generic line for the new
+  `UNEXPECTED_VALUE`; a branch for it would name it. The bundle compiles on consumer pins as
+  old as 6.6.2.
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
   is a site-by-site map from that repo's CLI code to cmdit calls. shakti, kriya, cyim and
   bannermanor are blocked on cmdit gaps; klug is not worth migrating.
-- **Deferred past 1.3.0 by decision (2026-10-14) — the survey's gaps.** The two correctness
-  defects the stdlib already fixed in 6.6.5 lead the list. First, the 128-positional cap drops
-  the rest silently (audit SEC-3, accepted at 1.0.0 because it matched the stdlib, which no
-  longer holds). Second, `--bool=0` sets the flag. Next come the missing offending-token
-  accessor (seven repos) and the missing top-level stop-at-positional. Ranked list:
-  [`roadmap.md`](roadmap.md#gaps-found-by-the-adoption-survey-2026-10-14--open-deferred-past-130).
+- **The survey's remaining gaps.** The two stdlib-parity defects shipped in 1.3.1. Next by
+  demand: an offending-token accessor (seven repos) and a top-level stop-at-positional. Those
+  two are all that still blocks shakti. Ranked list:
+  [`roadmap.md`](roadmap.md#gaps-found-by-the-adoption-survey-2026-10-14--open).
+- **The adoption notes record the 1.3.1 fixes.** bannermanor, klug, shakti, yo, kriya and cyim
+  each got an appended "Update — cmdit 1.3.1" (2026-10-14). bannermanor is no longer blocked on
+  cmdit; shakti is still blocked on the token accessor and stop-at-positional.
 - **Tooling noise is at zero; keep it there.** Under 6.7.9, `cyrius audit` is clean on every
   stage, and `fmt --check` / `lint` / `doc --check` are clean on all seven sources.
 - **v2 backlog** — see [`roadmap.md`](roadmap.md).

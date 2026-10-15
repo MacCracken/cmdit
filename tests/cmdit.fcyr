@@ -9,8 +9,8 @@
 #   I1  the result is one of OK / HELP / VERSION / RESULT_ERR
 #   I2  cmdit_error is a CmditErr, and it is NONE exactly when the parse is clean
 #   I3  cmdit_err_flag names a registered flag for MISSING_VALUE / BAD_INT /
-#       BAD_ENUM / OUT_OF_RANGE / REQUIRED_MISSING, and is -1 for UNKNOWN /
-#       BUNDLED / UNKNOWN_VERB
+#       BAD_ENUM / OUT_OF_RANGE / REQUIRED_MISSING / UNEXPECTED_VALUE, and is -1
+#       for UNKNOWN / BUNDLED / UNKNOWN_VERB
 #   I4  every positional and every remainder-slice token is one of the argv
 #       tokens (pointer identity), and the counts fit inside argc
 #   I5  on a clean parse the modifiers hold: the enum index is a choice, the
@@ -19,6 +19,10 @@
 #       parse failed gives the same error as a fresh one (the 1.2.4 err_entry
 #       leak class). Handles are otherwise single-parse, so only the error trio
 #       is compared on the reused one.
+#
+# Every 50th argv is long (up to 400 tokens) and mostly positional-shaped, with
+# frequent -H, so the parse usually runs past the 128-positional and 64-repeat
+# initial capacities and exercises the 1.3.1 growth paths.
 #
 # alloc_reset() between iterations keeps memory flat (cmdit_new is ~7.8 KB of a
 # free-less bump allocator), so the iteration count is not memory-bound.
@@ -33,6 +37,7 @@ include "src/cmdit.cyr"
 var FZ_SEEDS = 16;         # seeds per run
 var FZ_ITERS = 400;        # iterations per seed
 var FZ_MAXTOK = 24;        # argv tokens after argv[0]
+var FZ_BIGTOK = 400;       # every 50th argv: past the 128 / 64 initial capacities
 var FZ_POOL_N = 48;
 
 var _fz_state = 0;
@@ -105,7 +110,7 @@ fn _fz_build_pool(): i64 {
     store64(t + 304, "--=");            store64(t + 312, "---");
     store64(t + 320, "");               store64(t + 328, "=");
     store64(t + 336, "file.txt");       store64(t + 344, "-1");
-    store64(t + 352, "abc");            store64(t + 360, "--loud=1");
+    store64(t + 352, "--verbose=0");            store64(t + 360, "--loud=1");
     store64(t + 368, "--name=");        store64(t + 376, "--header");
     return 0;
 }
@@ -126,15 +131,39 @@ fn _fz_rand_token(): i64 {
     return s;
 }
 
+# A fresh positional-shaped token: 'f' then 0..7 random alphanumerics.
+fn _fz_pos_token(): i64 {
+    var alpha = "abcxyz0123456789";
+    var len = 1 + _fz_next() % 8;
+    var s = alloc(len + 1);
+    store8(s, 102);
+    var i = 1;
+    while (i < len) {
+        store8(s + i, load8(alpha + _fz_next() % 16));
+        i = i + 1;
+    }
+    store8(s + len, 0);
+    return s;
+}
+
 # Build the iteration's argv into _fz_argv/_fz_argc (argv[0] is the program).
 fn _fz_build_argv(): i64 {
-    var n = _fz_next() % (FZ_MAXTOK + 1);
+    # 1.3.1: every 50th argv is long and mostly positional-shaped, so the parse
+    # usually survives past the 128 / 64 initial capacities before an error token.
+    var big = 0;
+    if (_fz_iter % 50 == 0) { big = 1; }
+    var maxtok = FZ_MAXTOK;
+    if (big == 1) { maxtok = FZ_BIGTOK; }
+    var n = _fz_next() % (maxtok + 1);
     _fz_argv = alloc((n + 2) * 8);
     store64(_fz_argv, "prog");
     var i = 1;
     while (i <= n) {
         var tok = 0;
-        if (_fz_next() % 4 == 0) {
+        if (big == 1 && _fz_next() % 256 != 0) {
+            tok = _fz_pos_token();
+            if (_fz_next() % 4 == 0) { tok = "-H"; }             # repeat flag; its value is next
+        } elif (_fz_next() % 4 == 0) {
             tok = _fz_rand_token();
         } else {
             tok = load64(&_fz_pool + (_fz_next() % FZ_POOL_N) * 8);
@@ -198,7 +227,7 @@ fn _fz_check_result(h, rc, nflags): i64 {
     _fz_check(rc == CMDIT_OK || rc == CMDIT_HELP || rc == CMDIT_VERSION || rc == CMDIT_RESULT_ERR,
       "I1 undocumented result code");
     var err = cmdit_error(h);
-    _fz_check(err >= CMDIT_ERR_NONE && err <= CMDIT_ERR_TOO_MANY_POSITIONAL, "I2 error outside CmditErr");
+    _fz_check(err >= CMDIT_ERR_NONE && err <= CMDIT_ERR_NOMEM, "I2 error outside CmditErr");
     if (rc == CMDIT_RESULT_ERR) {
         _fz_check(err != CMDIT_ERR_NONE, "I2 RESULT_ERR with ERR_NONE");
     } else {
@@ -211,8 +240,11 @@ fn _fz_check_result(h, rc, nflags): i64 {
     if (names_none == 1) {
         _fz_check(ef == 0 - 1, "I3 err_flag set for an error that names no flag");
     }
-    if (err == CMDIT_ERR_MISSING_VALUE || err == CMDIT_ERR_BAD_INT || err == CMDIT_ERR_BAD_ENUM
-      || err == CMDIT_ERR_OUT_OF_RANGE || err == CMDIT_ERR_REQUIRED_MISSING) {
+    var names_one = 0;
+    if (err == CMDIT_ERR_MISSING_VALUE || err == CMDIT_ERR_BAD_INT || err == CMDIT_ERR_BAD_ENUM) { names_one = 1; }
+    if (err == CMDIT_ERR_OUT_OF_RANGE || err == CMDIT_ERR_REQUIRED_MISSING) { names_one = 1; }
+    if (err == CMDIT_ERR_UNEXPECTED_VALUE) { names_one = 1; }                           # 1.3.1
+    if (names_one == 1) {
         _fz_check(ef >= 0 && ef < nflags, "I3 err_flag does not name a registered flag");
     }
     return 0;

@@ -4,6 +4,99 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-14
+
+**Stdlib parity: two correctness defects that the parser cmdit was forked from fixed in
+6.6.5, and cmdit still had.** Both silently did something other than what was typed. Both were
+found by the 1.3.0 adoption survey and reproduced on `cmdit-smoke`. **357 → 400 assertions**,
+and every change is mutation-proven: 10/10 seeded reverts are caught. The append-only error
+taxonomy grows by two codes; nothing else in the API changes.
+
+### Fixed — positionals past the 128th were dropped silently
+
+`_cmdit_push_positional` stopped storing at `CMDIT_POS_MAX = 128` and reported nothing.
+`cmdit-smoke $(seq 1 200)` printed `positionals: 128`, and the caller could not tell, because
+`cmdit_positional_count` read exactly 128. That is a shell glob away from data loss:
+
+- **shakti:** the privileged command line would have been truncated with exit 0, so policy
+  evaluation, the audit record and `execve` would all see a shorter command than the one
+  typed.
+- **kriya:** `rm *` over 200 files deleted 128 and exited 0, until it moved to the stdlib's
+  fix.
+
+The positional array now **doubles** when full (128 → 256 → 512 …), copying the pointers
+across, so every positional is kept in order. Parsing stays linear: 20,000 arguments parse in
+2 ms and 100,000 in 5 ms.
+
+⛔ **This reverses the 1.0.0 audit's SEC-3 ("accepted: memory-safe, lossy, documented").**
+That acceptance rested on cmdit "matching the stdlib parser's drop-past-cap rule", and the
+stdlib has grown its array since 6.6.5. The audit entry now records the revision
+(`docs/audit/2026-06-25-audit.md`).
+
+### Fixed — repeat flags past the 64th occurrence were dropped silently
+
+The same rule capped a `cmdit_repeat` list at `CMDIT_REPEAT_MAX = 64`. Lists now double too.
+Their capacity is **derived from the count** (64, doubled until it covers it) rather than
+stored, so the 112 B entry layout is unchanged. `CMDIT_POS_MAX` and `CMDIT_REPEAT_MAX` are now
+*initial* capacities. They were always internal constants, not API (ADR-0003).
+
+### Added — `CMDIT_ERR_NOMEM = 12`: a refused growth is an error, never a drop
+
+If the doubling alloc is refused, the parse fails with `CMDIT_ERR_NOMEM` ("out of memory"). A
+repeat list names its flag via `cmdit_err_flag`; the positional array names none. Before
+1.3.1, a refused repeat-list alloc *also* dropped silently. This mirrors stdlib
+`FLAG_ERR_NOMEM` (6.6.7). It is unreachable through the public API, since the sizes are far
+inside `ALLOC_MAX`. The tests reach it by setting a handle's capacity fields to 2^59, so the
+doubling alloc must refuse.
+
+### Fixed — `--bool=value` turned the flag ON, whatever the value
+
+`_cmdit_apply`'s bool branch stored 1 and ignored an attached value. So `--verbose=0`, the
+opposite of what was typed, *enabled* verbose, and `--loud=nonsense` parsed clean. A bool
+given `=value` (including an empty `--flag=`) is now **`CMDIT_ERR_UNEXPECTED_VALUE = 11`**. It
+names the flag and renders `prog: --loud: option takes no value`. It applies on every path:
+`cmdit_parse_argv`, global flags before or after the verb in `cmdit_dispatch_argv`, verb
+scopes via `cmdit_parse_verb`, and the auto `--help` / `--version` (`--help=x` is an error, not
+help). **The env fallback is unchanged:** a bool bound with `cmdit_env` keeps presence
+semantics, so `NO_COLOR`-style variables still work. This mirrors stdlib
+`FLAG_ERR_UNEXPECTED_VALUE` (6.6.5).
+
+⚠ **This rejects input that parsed before.** Any script passing `--some-bool=1` now fails with
+exit 2. That input never meant what it looked like, but it is a visible change.
+
+### Tests
+
+- **+43 assertions (357 → 400):**
+  - 300 repeat occurrences and 1,000 positionals, each a distinct pointer, checked in order
+    through three regrowths, plus a white-box check that capacity doubled (not regrown per
+    push);
+  - 999 trailing args through verb re-entry;
+  - both NOMEM paths and their `err_flag`;
+  - `_cmdit_repeat_cap`;
+  - `--loud=0`, `--loud=`, `--help=x`, and global bools before and after a verb;
+  - the env-bool presence path;
+  - the exact stderr lines for both new codes, captured through `pipe(2)` / `dup2(2)`.
+- **Mutation-proven, 10/10.** Caught: each growth path reverted to the silent drop, a copy one
+  slot short, the capacity not updated, a repeat cap that never doubles, the bool check
+  removed, both NOMEM mappings, and both messages.
+- **The fuzz harness** accepts the two new codes:
+  - I2's bound is now `NOMEM`;
+  - `UNEXPECTED_VALUE` joins I3's names-a-flag list;
+  - a pool token now puts `--verbose=0` through the dispatch path.
+
+  Every 50th argv is now long (up to 400 tokens) and mostly positional-shaped, with frequent
+  `-H`. About 50 parses per run cross 128 positionals, and about 20 cross 64 repeats.
+- `cyrius fuzz --poison=ab`, the suite under `CYRIUS_POISON=1`, and `cyrius audit` are all
+  clean. The bundle passes 400/400 on a 6.6.2 compiler.
+
+### Consumers
+
+Re-pinning to 1.3.1 breaks none of the six. kii and anuenue switch on `cmdit_error` with an
+`else` fallback, so a `--bool=value` gets their generic "argument parse error" line; a branch
+for `CMDIT_ERR_UNEXPECTED_VALUE` would name it. anuenue's fuzz bound
+`err <= CMDIT_ERR_TOO_MANY_POSITIONAL` still holds, because its pool has no bool-with-value
+token, but the taxonomy maximum is now `CMDIT_ERR_NOMEM`.
+
 ## [1.3.0] - 2026-10-14
 
 **Toolchain `6.6.20` → `6.7.9`, `cmdit_new` ~6× faster, `cmdit_argv` linear instead of

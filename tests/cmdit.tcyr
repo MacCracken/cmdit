@@ -45,6 +45,25 @@ fn capture_completions(h, shell, buf, cap): i64 {
     return n;
 }
 
+# 1.3.1: the same capture on fd 2, for cmdit_print_error's exact line.
+fn capture_print_error(h, buf, cap): i64 {
+    var pfd[8];                                  # int fds[2]
+    if (syscall(22, &pfd) != 0) { return 0 - 1; }
+    var rfd = load32(&pfd);
+    var wfd = load32(&pfd + 4);
+    var saved = syscall(32, 2);                  # dup(2)
+    syscall(33, wfd, 2);                         # dup2(wfd, 2)
+    cmdit_print_error(h);
+    syscall(33, saved, 2);                       # restore fd 2
+    syscall(3, wfd);
+    syscall(3, saved);
+    var n = syscall(0, rfd, buf, cap - 1);       # read
+    syscall(3, rfd);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return n;
+}
+
 # 1 when `hay` contains `needle` (both NUL-terminated).
 fn contains(hay, needle): i64 {
     var i = 0;
@@ -416,24 +435,34 @@ fn main() {
     assert(cstreq(cmdit_get_str(hmv, fout), "real.txt") == 1, "metavar is cosmetic: parsing unaffected");
     assert(cmdit_help(hmv) == 0, "cmdit_help renders <FILE>/<N> metavars + (default: out.txt)");
 
-    test_group("repeat: list capped at 64, last-wins tracks past the cap");
+    test_group("repeat: the list grows past 64 (1.3.1; it used to drop silently)");
+    # 300 occurrences cross three doublings (64 -> 128 -> 256 -> 512). Every value
+    # is a distinct pointer, so order and identity are checked through each copy.
     var hpc = cmdit_new("t");
     var fpc = cmdit_repeat(hpc, 72, "header", "");
-    var navp = 131;                       # "t" + 65 * ("-H" value)
+    var nrep = 300;
+    var navp = 1 + nrep * 2;
     var avpc = alloc(navp * 8);
+    var rvals = alloc(nrep * 2);                   # nrep distinct 1-char strings
     store64(avpc, "t");
     var pk = 0;
-    while (pk < 65) {
+    while (pk < nrep) {
+        store8(rvals + pk * 2, 118); store8(rvals + pk * 2 + 1, 0);
         store64(avpc + (1 + pk * 2) * 8, "-H");
-        store64(avpc + (2 + pk * 2) * 8, "v");
+        store64(avpc + (2 + pk * 2) * 8, rvals + pk * 2);
         pk = pk + 1;
     }
-    store64(avpc + (2 + 64 * 2) * 8, "LAST");   # distinct 65th value for last-wins
-    assert(cmdit_parse_argv(hpc, navp, avpc) == CMDIT_OK, "65 -H parse OK");
-    assert(cmdit_repeat_count(hpc, fpc) == 64, "list capped at 64");
-    assert(cmdit_repeat_get(hpc, fpc, 64) == 0, "65th (index 64) dropped -> 0");
-    assert(cmdit_repeat_get(hpc, fpc, 63) != 0, "64th (index 63) retained");
-    assert(cstreq(cmdit_get_str(hpc, fpc), "LAST") == 1, "last-wins view tracks past the cap");
+    assert(cmdit_parse_argv(hpc, navp, avpc) == CMDIT_OK, "300 -H parse OK");
+    assert(cmdit_repeat_count(hpc, fpc) == nrep, "all 300 kept");
+    var rsame = 1;
+    pk = 0;
+    while (pk < nrep) {
+        if (cmdit_repeat_get(hpc, fpc, pk) != rvals + pk * 2) { rsame = 0; }
+        pk = pk + 1;
+    }
+    assert(rsame == 1, "every occurrence kept, in order, through three regrowths");
+    assert(cmdit_repeat_get(hpc, fpc, nrep) == 0, "past the count -> 0");
+    assert(cmdit_get_str(hpc, fpc) == rvals + (nrep - 1) * 2, "last-wins view is the 300th");
 
     test_group("err_flag: names the offending flag; -1 for unknown");
     var hef = cmdit_new("t");
@@ -1044,6 +1073,127 @@ fn main() {
     assert(lsame == 1, "every slot is pointer-identical to argv(i)");
     assert(load64(la + ln * 8) == 0, "materialized argv is NULL-terminated");
     assert(cmdit_argv(lh) == ln, "second call returns the cached count");
+
+    test_group("1.3.1 positionals grow past 128 (it used to drop the rest silently)");
+    # `tool *.txt` over 1000 files: 1000 distinct positional pointers with a flag in
+    # the middle, crossing three doublings (128 -> 256 -> 512 -> 1024).
+    var npos = 1000;
+    var pgh = cmdit_new("t");
+    var gloud = cmdit_bool(pgh, 108, "loud", "");
+    var pgav = alloc((npos + 2) * 8);
+    var gvals = alloc(npos * 2);
+    store64(pgav, "t");
+    var gk = 0;
+    var gslot = 1;
+    while (gk < npos) {
+        if (gk == 500) { store64(pgav + gslot * 8, "--loud"); gslot = gslot + 1; }
+        store8(gvals + gk * 2, 102); store8(gvals + gk * 2 + 1, 0);
+        store64(pgav + gslot * 8, gvals + gk * 2);
+        gslot = gslot + 1;
+        gk = gk + 1;
+    }
+    assert(cmdit_parse_argv(pgh, gslot, pgav) == CMDIT_OK, "1000 positionals + a flag parse OK");
+    assert(cmdit_positional_count(pgh) == npos, "all 1000 counted");
+    var gsame = 1;
+    gk = 0;
+    while (gk < npos) {
+        if (cmdit_positional(pgh, gk) != gvals + gk * 2) { gsame = 0; }
+        gk = gk + 1;
+    }
+    assert(gsame == 1, "every positional kept, in order, through three regrowths");
+    assert(cmdit_positional(pgh, npos) == 0, "past the count -> 0");
+    assert(load64(pgh + 32) == 1024, "capacity doubled to 1024, not regrown per push");
+    assert(cmdit_get_bool(pgh, gloud) == 1, "the flag between positionals still applied");
+    assert(cmdit_require_positionals_max(pgh, 999) == CMDIT_RESULT_ERR, "positionals_max(999) sees all 1000");
+    assert(cmdit_require_positionals_exact(pgh, 1000) == CMDIT_OK, "positionals_exact(1000) holds");
+    # Through verb re-entry: the remainder slice was never capped; the child is now too.
+    var gvh = cmdit_new("t");
+    cmdit_verb(gvh, "rm", "");
+    store64(pgav + 8, "rm");                        # argv: t rm <positionals...>
+    var gvr = cmdit_dispatch_argv(gvh, gslot, pgav);
+    assert(gvr == CMDIT_OK, "dispatch with 999 trailing args OK");
+    var gch = cmdit_new("t rm");
+    cmdit_bool(gch, 108, "loud", "");
+    assert(cmdit_parse_verb(gch, gvh) == CMDIT_OK, "verb scope parses them");
+    assert(cmdit_positional_count(gch) == npos - 1, "verb scope keeps all 999");
+
+    test_group("1.3.1 a refused growth is CMDIT_ERR_NOMEM, never a silent drop");
+    # Unreachable through the public API (the sizes are far inside ALLOC_MAX), so the
+    # handle is pushed to a capacity whose doubling alloc must refuse.
+    var huge = 576460752303423488;                 # 2^59: doubling * 8 overflows
+    assert(_cmdit_grow(gvals, 0, huge * 2) == 0, "_cmdit_grow reports a refused alloc as 0");
+    assert(_cmdit_repeat_cap(0) == 64, "repeat cap starts at CMDIT_REPEAT_MAX");
+    assert(_cmdit_repeat_cap(64) == 64, "repeat cap 64 holds 64");
+    assert(_cmdit_repeat_cap(65) == 128, "repeat cap doubles past 64");
+    assert(_cmdit_repeat_cap(300) == 512, "repeat cap covers 300 with 512");
+    var nh = cmdit_new("t");
+    store64(nh + 32, huge);                        # positional cap
+    store64(nh + 40, huge);                        # positional count == cap -> must grow
+    var nav = alloc(2 * 8); store64(nav, "t"); store64(nav + 8, "x");
+    assert(cmdit_parse_argv(nh, 2, nav) == CMDIT_RESULT_ERR, "refused positional growth fails the parse");
+    assert(cmdit_error(nh) == CMDIT_ERR_NOMEM, "positional growth failure -> NOMEM");
+    assert(cmdit_err_flag(nh) == 0 - 1, "positional NOMEM names no flag");
+    var nbuf = alloc(256);
+    capture_print_error(nh, nbuf, 256);
+    assert(cstreq(nbuf, "t: out of memory\n") == 1, "NOMEM renders as `out of memory`");
+    var nrh = cmdit_new("t");
+    var rf = cmdit_repeat(nrh, 72, "header", "");
+    var nrav = alloc(3 * 8); store64(nrav, "t"); store64(nrav + 8, "-H"); store64(nrav + 16, "a");
+    assert(cmdit_parse_argv(nrh, 3, nrav) == CMDIT_OK, "first -H allocates the list");
+    store64(_cmdit_entry(nrh, rf) + 96, huge);      # repeat count at a doubling boundary
+    assert(cmdit_parse_argv(nrh, 3, nrav) == CMDIT_RESULT_ERR, "refused repeat growth fails the parse");
+    assert(cmdit_error(nrh) == CMDIT_ERR_NOMEM, "repeat growth failure -> NOMEM");
+    assert(cmdit_err_flag(nrh) == rf, "repeat NOMEM names its flag");
+
+    test_group("1.3.1 a bool given =value is rejected (`--loud=0` used to turn it ON)");
+    var bh = cmdit_new("prog");
+    var bl = cmdit_bool(bh, 108, "loud", "");
+    var bav = alloc(2 * 8); store64(bav, "prog"); store64(bav + 8, "--loud=0");
+    assert(cmdit_parse_argv(bh, 2, bav) == CMDIT_RESULT_ERR, "--loud=0 is an error");
+    assert(cmdit_error(bh) == CMDIT_ERR_UNEXPECTED_VALUE, "-> UNEXPECTED_VALUE");
+    assert(cmdit_err_flag(bh) == bl, "names --loud");
+    assert(cmdit_get_bool(bh, bl) == 0, "the flag was not set");
+    assert(cmdit_seen(bh, bl) == 0, "and not marked seen");
+    var bbuf = alloc(256);
+    capture_print_error(bh, bbuf, 256);
+    assert(cstreq(bbuf, "prog: --loud: option takes no value\n") == 1, "renders `--loud: option takes no value`");
+    var bh2 = cmdit_new("prog");
+    cmdit_bool(bh2, 108, "loud", "");
+    store64(bav + 8, "--loud=");
+    assert(cmdit_parse_argv(bh2, 2, bav) == CMDIT_RESULT_ERR, "an empty =value is still a value");
+    var bh3 = cmdit_new("prog");
+    var bl3 = cmdit_bool(bh3, 108, "loud", "");
+    store64(bav + 8, "--loud");
+    assert(cmdit_parse_argv(bh3, 2, bav) == CMDIT_OK, "bare --loud still OK");
+    assert(cmdit_get_bool(bh3, bl3) == 1, "and sets the flag");
+    var bh4 = cmdit_new("prog");
+    store64(bav + 8, "--help=x");
+    assert(cmdit_parse_argv(bh4, 2, bav) == CMDIT_RESULT_ERR, "--help=x is an error, not CMDIT_HELP");
+    assert(cmdit_error(bh4) == CMDIT_ERR_UNEXPECTED_VALUE, "auto bools follow the same rule");
+    # Dispatch path: a global bool before and after the verb.
+    var bd = cmdit_new("prog");
+    var bdv = cmdit_bool(bd, 0, "verbose", "");
+    cmdit_verb(bd, "go", "");
+    var bdav = alloc(3 * 8); store64(bdav, "prog"); store64(bdav + 8, "--verbose=1"); store64(bdav + 16, "go");
+    assert(cmdit_dispatch_argv(bd, 3, bdav) == CMDIT_RESULT_ERR, "global --verbose=1 before the verb is an error");
+    assert(cmdit_error(bd) == CMDIT_ERR_UNEXPECTED_VALUE, "-> UNEXPECTED_VALUE (before)");
+    assert(cmdit_err_flag(bd) == bdv, "names --verbose (before)");
+    var bd2 = cmdit_new("prog");
+    cmdit_bool(bd2, 0, "verbose", "");
+    cmdit_verb(bd2, "go", "");
+    store64(bdav + 8, "go"); store64(bdav + 16, "--verbose=1");
+    assert(cmdit_dispatch_argv(bd2, 3, bdav) == CMDIT_RESULT_ERR, "global --verbose=1 after the verb is an error");
+    assert(cmdit_error(bd2) == CMDIT_ERR_UNEXPECTED_VALUE, "-> UNEXPECTED_VALUE (after)");
+    # The env fallback keeps presence semantics: a set var turns a bool on.
+    if (getenv("HOME") != 0) {
+        var be = cmdit_new("prog");
+        var bel = cmdit_bool(be, 0, "loud", "");
+        cmdit_env(be, bel, "HOME");
+        var beav = alloc(1 * 8); store64(beav, "prog");
+        assert(cmdit_parse_argv(be, 1, beav) == CMDIT_OK, "env-bool parse OK");
+        assert(cmdit_finalize(be) == CMDIT_OK, "env-bool finalize OK (no value check on env)");
+        assert(cmdit_get_bool(be, bel) == 1, "a set env var still turns the bool on");
+    }
 
     test_group("1.2.4 security: emitters actually sanitise the program name");
     # The end-to-end case. prog_name here is what argv[0] would be on the

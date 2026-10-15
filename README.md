@@ -5,13 +5,14 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.3.0 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.3.1 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
-faster. **1.2.4 is a security release** — the completion generator
-interpolated the program name, which on the `cmdit_new(0)` path comes from `argv[0]`,
-raw into the scripts it emits; it also closes three memory-safety/contract defects. No
-API change. **Consumers on any earlier version that generate completions should update.**
+faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`). **1.2.4 is a
+security release** — the completion generator interpolated the program name, which on the
+`cmdit_new(0)` path comes from `argv[0]`, raw into the scripts it emits; it also closes
+three memory-safety/contract defects. No API change. **Consumers on any earlier version that
+generate completions should update.**
 **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
@@ -30,7 +31,8 @@ codes) plus the three things every structured consumer copies by hand.
 
 - **Typed flags** — `cmdit_bool` / `cmdit_int` / `cmdit_str`, short + long aliases.
 - **getopt-long syntax** — `--name`, `--name=value`, `--name value`, `-x`, `-x value`,
-  `--` terminator, lone `-` positional; positionals captured in argv order.
+  `--` terminator, lone `-` positional; positionals captured in argv order, with no
+  count limit (1.3.1). A bool given `--flag=value` is an error (1.3.1), as in getopt_long.
 - **The argv materialize bridge** — `cmdit_argv` turns `argc()/argv(i)` into one
   contiguous `cstr*` array (the boilerplate every structured consumer re-copied).
 - **Auto `--help`/`-h` + `--version`/`-V`** — registered for free; `cmdit_parse`
@@ -134,7 +136,8 @@ constants, not API (do not depend on their values).
   `cmdit_positional_count`, `cmdit_verb_matched` / `cmdit_verb_argc` /
   `cmdit_verb_argv`, `cmdit_raw_argv` / `cmdit_raw_argc`, `cmdit_basename`.
 - **Validate / errors:** `cmdit_require_positionals` / `_max` / `_exact`,
-  `cmdit_error` (last `CmditErr`), `cmdit_err_flag` (offending flag index).
+  `cmdit_error` (last `CmditErr`, `CMDIT_ERR_NONE` 0 … `CMDIT_ERR_NOMEM` 12),
+  `cmdit_err_flag` (offending flag index).
 - **Output:** `cmdit_help` (Usage + flag list) / `cmdit_help_flags` (table-only rows,
   for tools framing their own help) / `cmdit_verbs_help`, `cmdit_version`, `cmdit_print_error`.
 - **Result codes:** `CMDIT_OK` / `CMDIT_HELP` / `CMDIT_VERSION` / `CMDIT_RESULT_ERR`.
@@ -210,6 +213,10 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   the entry table a word at a time; `cmdit_argv` linear on Linux (20,000 args: 2.6 s → 11 ms);
   **357/357 tests**; a real fuzz harness over both parse cores (the old one
   was a stub); benchmarks re-captured with a 1.0.0 → 1.3.0 bisect. No API change.
+- **1.3.1** — stdlib parity: positionals and repeat lists **grow** instead of silently dropping
+  past 128 / 64, and a bool given `=value` is `CMDIT_ERR_UNEXPECTED_VALUE` (11) instead of
+  turning the flag on. A refused growth is `CMDIT_ERR_NOMEM` (12). **400/400 tests**, every
+  change mutation-proven.
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -218,6 +225,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (357/357)
+cyrius test                                          # run tests/*.tcyr  (400/400)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```
