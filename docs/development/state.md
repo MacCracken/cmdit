@@ -5,6 +5,14 @@
 
 ## Version
 
+**1.3.5** — built 2026-10-14. **Help on a chosen stream, and hidden verbs.**
+`cmdit_help_fd` / `cmdit_help_flags_fd` / `cmdit_verbs_help_fd(h, fd)`; the stderr forms are
+byte-identical wrappers. `cmdit_verb_hidden` / `cmdit_verb_is_hidden`: a verb that dispatches
+but stays out of help, the unknown-command list and completions. Verb row 32 → 40 B. The verb
+list's content is now pinned; its tests checked only the return code. Dispatch is +6–10 ns
+(code layout, stride ruled out), and a verb tool's construction +0.2 µs. **596 → 629
+assertions**, 12/12 mutation-proven.
+
 **1.3.4** — built 2026-10-14. **POSIX stop-at-first-positional**, `cmdit_stop_at_positional(h,
 on)`. Option recognition stops at the first positional (a lone `-` included), and a `--`
 after it stays data. It is not the per-verb trailing mark, which consumes `--` at its
@@ -173,7 +181,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **596/596**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+- `tests/cmdit.tcyr` — **629/629**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
   `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
@@ -232,13 +240,12 @@ None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
 
 ## Next
 
-v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.3 and 1.3.4
-shipped the first two pinned survey gaps, which together were shakti's blockers; 1.3.5–1.3.7
-are pinned to the rest.
+v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.3–1.3.5
+shipped three of the pinned survey gaps; 1.3.6 and 1.3.7 remain.
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.3.4 are recommended.** They bring the misparse fixes, the speed
+- **Consumer re-pins to 1.3.5 are recommended.** They bring the misparse fixes, the speed
   work, the audit repairs and the token-naming error lines. None of the six breaks.
   - stiva, ifran, commandress and dig call `cmdit_print_error`, so their stderr lines now
     name the token; no test of theirs pins the old text.
@@ -252,8 +259,8 @@ Open, in rough order:
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
   is a site-by-site map from that repo's CLI code to cmdit calls. shakti, kriya, cyim and
   bannermanor are blocked on cmdit gaps; klug is not worth migrating.
-- **Pinned for 1.3.x** ([`roadmap.md`](roadmap.md#pinned-for-13x)): 1.3.5 fd-selectable
-  help + hidden verbs, 1.3.6 small modifiers, 1.3.7 flag-table introspection.
+- **Pinned for 1.3.x** ([`roadmap.md`](roadmap.md#pinned-for-13x)): 1.3.6 small modifiers,
+  1.3.7 flag-table introspection.
 - **Adoption notes predate 1.3.3 and 1.3.4.** They still list the token gap as open (shakti,
   attn11, owl, chakshu, hapi, phylax, agnova) and stop-at-positional as a blocker (shakti,
   kriya). shakti's note calls it blocked, but neither of its two cmdit blockers remains. Left

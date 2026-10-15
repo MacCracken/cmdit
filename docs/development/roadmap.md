@@ -6,14 +6,14 @@
 
 ## Shipped
 
-v1.0.0 (2026-06-25) froze the public API. Every v1.0 criterion and milestones M0–M4
-are done (extraction, flag modifiers, verb dispatch, completeness delta + freeze). 1.1,
-1.2.x and 1.3.x are append-only on the frozen surface. 1.3.2 was a full audit sweep
-([`../audit/2026-10-14-audit.md`](../audit/2026-10-14-audit.md)), and 1.3.3 shipped the
-first pinned survey gap, `cmdit_err_token` / `cmdit_err_value`; 1.3.4 shipped
-`cmdit_stop_at_positional`. For details, see the CHANGELOG and
-ADRs [0001](../adr/0001-flag-modifiers.md) / [0002](../adr/0002-verb-dispatch.md) /
-[0003](../adr/0003-v1-freeze.md).
+v1.0.0 (2026-06-25) froze the public API. Every v1.0 criterion and milestones M0–M4 are done
+(extraction, flag modifiers, verb dispatch, completeness delta + freeze). 1.1, 1.2.x and 1.3.x
+are append-only on the frozen surface. 1.3.2 was a full audit sweep
+([`../audit/2026-10-14-audit.md`](../audit/2026-10-14-audit.md)), and 1.3.3 shipped the first
+pinned survey gap, `cmdit_err_token` / `cmdit_err_value`; 1.3.4 shipped
+`cmdit_stop_at_positional`; 1.3.5 the `_fd` help renderers and hidden verbs. For details, see
+the CHANGELOG and ADRs [0001](../adr/0001-flag-modifiers.md) /
+[0002](../adr/0002-verb-dispatch.md) / [0003](../adr/0003-v1-freeze.md).
 
 ## Adoption — demand-gated, not a forced sweep
 
@@ -39,15 +39,11 @@ surfaces ships append-only (that is how `cmdit_help_flags`, verb introspection, 
 
 The 2026-10-14 adoption survey of the 18 hand-rolled candidates found where cmdit cannot
 express a real tool's CLI. Its two worst gaps shipped in 1.3.1 (silent positional/repeat caps,
-`--bool=0`), the offending-token accessor (seven repos) in 1.3.3, and POSIX
-stop-at-first-positional in 1.3.4. Those two cleared shakti's blockers. The rest are pinned
-below, one theme per release, ordered by how many repos each unblocks. Every item is
-append-only on the frozen 1.0.0 surface.
+`--bool=0`), the offending-token accessor (seven repos) in 1.3.3, POSIX
+stop-at-first-positional in 1.3.4 (those two cleared shakti's blockers), and help on a chosen
+stream plus hidden verbs in 1.3.5. The rest are pinned below, one theme per release, ordered
+by how many repos each unblocks. Every item is append-only on the frozen 1.0.0 surface.
 
-- [ ] **1.3.5 — output to a chosen fd, and hidden verbs.**
-  - fd-taking variants of `cmdit_help` / `cmdit_help_flags` / `cmdit_verbs_help`. 14 of the
-    18 candidates print help on stdout; anuenue's stderr choice stays the default.
-  - Hidden verbs, kept out of help, the verb list and completions (hoosh `bench`).
 - [ ] **1.3.6 — small modifiers**, each requested by one repo:
   - a once-only flag, or a per-flag occurrence count (cyim; 9 smoke cases assert it);
   - case-insensitive enum matching (phylax `--severity-threshold`);
@@ -58,11 +54,11 @@ append-only on the frozen 1.0.0 surface.
     `--help=json`).
   - Per-verb flags in `cmdit_completions`, which needs them (ark).
 
-**Filed against cyrius:** stdlib `args_init` returns a prefix of a command line longer than
-2 MiB with no error (ARG_MAX rises with `ulimit -s`). That is
-cyrius `docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`, for cyrius to place and repair. Since 1.3.2, cmdit fails closed with
-`CMDIT_ERR_ARGV` instead of parsing the prefix (audit SEC-7). Revisit that check when cyrius
-closes the issue.
+**Filed against cyrius:** stdlib `args_init` returns a prefix of a command line longer than 2
+MiB with no error (ARG_MAX rises with `ulimit -s`). That is cyrius
+`docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`, for cyrius to
+place and repair. Since 1.3.2, cmdit fails closed with `CMDIT_ERR_ARGV` instead of parsing the
+prefix (audit SEC-7). Revisit that check when cyrius closes the issue.
 
 **Not pinned:** negative-number positionals such as `hadara at -1000`;
 `cmdit_verb_trailing_after(h, v, 0)` handles them for a verb, and `cmdit_stop_at_positional`

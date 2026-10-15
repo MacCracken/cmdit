@@ -4,6 +4,91 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-10-14
+
+**Help on a chosen stream, and hidden verbs.** This is the third pinned 1.3.x item. Five
+append-only functions are added; existing output is byte-identical. **596 → 629 assertions**,
+and 12/12 seeded reverts are caught.
+
+### Added — `cmdit_help_fd` / `cmdit_help_flags_fd` / `cmdit_verbs_help_fd(h, fd)`
+
+The adoption survey found 14 of the 18 candidate tools printing `--help` on **stdout**. That
+is the GNU convention: requested help goes to stdout with exit 0, and a usage error goes to
+stderr. The examples are takumi's and hadara's `println` usage and hapi's, phylax's and
+agnova's help screens. cmdit's renderers only wrote stderr, so a tool that wanted generated
+help had to give up its stream. The three `_fd` forms take the stream:
+
+```
+if (r == CMDIT_HELP)       { cmdit_help_fd(h, 1); return CMDIT_EXIT_OK; }      # --help: stdout
+if (r == CMDIT_RESULT_ERR) { cmdit_print_error(h); cmdit_help(h); return CMDIT_EXIT_USAGE; }
+```
+
+`cmdit_help`, `cmdit_help_flags` and `cmdit_verbs_help` are now the `fd = 2` forms, with
+**output byte-identical** to 1.3.4; the suite pins each pair equal. The stream is a call
+argument, not a handle setting, so `cmdit_print_error`'s appended command list can never
+land on stdout. anuenue's deliberate stderr help is the default and stays as it was.
+
+### Added — `cmdit_verb_hidden(h, verb_id)` / `cmdit_verb_is_hidden(h, i)`
+
+A hidden verb still **dispatches** (its id, its aliases and its trailing mark all work). It
+is left out of:
+
+- `cmdit_help` and `cmdit_verbs_help`;
+- the command list `cmdit_print_error` shows for an unknown verb;
+- all three completion scripts.
+
+Its aliases are hidden with it, and hiding through an alias row hides the verb. This is for
+maintenance and diagnostic commands a tool keeps out of its advertised surface, such as hoosh
+`bench`, which dispatches but appears in no help. `cmdit_verb_is_hidden` lets a tool that
+builds its own listing from the 1.2.0 introspection accessors skip them too. When every verb
+is hidden, help prints no empty `Commands:` block.
+
+The verb row grows from 32 to 40 B for the flag at `+32`. Verb-row size is an internal
+constant (ADR-0003), and 128 rows now take 5,120 B.
+
+### Fixed — the verb list's content was never tested
+
+Every existing test of `cmdit_verbs_help` checked its return code only. That was exposed when
+1.3.5's own first draft read the new hidden flag at `+32` before the row had grown. On
+32-byte rows that is the **next** row's name pointer, so every verb but the last was treated
+as hidden, and 596 assertions still passed. The suite now pins the exact listing. The
+stride-back-to-32 mutant crashes it: the last row's write lands past the table.
+
+### Performance
+
+- **Verb table construction:** handle + first verb **+0.2 µs (2.85 → 3.04 µs)**, from
+  zeroing a 25% larger verb table.
+- **Dispatch:** +6 to +10 ns per call (`dispatch_before_verb` 178 → 184 ns,
+  `dispatch_after_verb` 244 → 254 ns, medians of 11 interleaved runs). It is **not** the
+  row stride: 1.3.4 rebuilt with only the stride changed measures dispatch unchanged. Nothing
+  in the dispatch path changed either. What tracks it is where the dispatcher lands in
+  memory. Moving the two new functions after it, beside the other verb accessors, recovered
+  about half (dispatch-after 262 → 254 ns). The rest is attributed to code layout and
+  recorded rather than chased.
+- Every other bench is within ±2%.
+
+### Tests
+
+- **+33 assertions (596 → 629):**
+  - the verb list's exact content;
+  - each `_fd` renderer on stdout byte-identical to its stderr form, and `fd = 2` identical
+    to the legacy call;
+  - hidden verbs dispatching (directly and through an alias), and absent from
+    `cmdit_verbs_help`, `cmdit_help`, the unknown-command list, and the bash, zsh and fish
+    scripts;
+  - hiding through an alias row, the trailing mark on a hidden verb, bounds and a 0 handle;
+  - no empty `Commands:` block when every verb is hidden.
+- **The fuzz harness's verb handle now has a hidden verb**, so dispatch is fuzzed with one
+  present.
+- **Mutation-proven, 12/12:**
+  - each `_fd` form writing to stderr anyway (rows, verb list, short-flag byte);
+  - hidden ignored by the listing, bash, zsh or fish;
+  - the alias-row resolution in the setter and the accessor;
+  - the bounds check;
+  - the empty-block guard;
+  - the 32-byte stride.
+- The bundle passes 629/629 on a 6.6.2 compiler.
+
 ## [1.3.4] - 2026-10-14
 
 **POSIX stop-at-first-positional: `cmdit_stop_at_positional(h, on)`.** This is the second

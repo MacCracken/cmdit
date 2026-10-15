@@ -83,6 +83,32 @@ fn capture_help(h, buf, cap): i64 {
     return n;
 }
 
+# 1.3.5: capture one renderer's output on `fd`. which: 0 help_fd, 1 help_flags_fd,
+# 2 verbs_help_fd (each called with `fd`); 3 help, 4 help_flags, 5 verbs_help (the
+# stderr wrappers; capture with fd 2).
+fn capture_render(h, which, fd, buf, cap): i64 {
+    var pfd[8];
+    if (syscall(22, &pfd) != 0) { return 0 - 1; }
+    var rfd = load32(&pfd);
+    var wfd = load32(&pfd + 4);
+    var saved = syscall(32, fd);
+    syscall(33, wfd, fd);
+    if (which == 0) { cmdit_help_fd(h, fd); }
+    if (which == 1) { cmdit_help_flags_fd(h, fd); }
+    if (which == 2) { cmdit_verbs_help_fd(h, fd); }
+    if (which == 3) { cmdit_help(h); }
+    if (which == 4) { cmdit_help_flags(h); }
+    if (which == 5) { cmdit_verbs_help(h); }
+    syscall(33, saved, fd);
+    syscall(3, wfd);
+    syscall(3, saved);
+    var n = syscall(0, rfd, buf, cap - 1);
+    syscall(3, rfd);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return n;
+}
+
 # Capture cmdit_version(h, v)'s stdout into buf.
 fn capture_version(h, v, buf, cap): i64 {
     var pfd[8];
@@ -1812,6 +1838,97 @@ fn main() {
     store64(svav + 8, "add"); store64(svav + 16, "--help");
     assert(cmdit_dispatch_argv(svhh, 3, svav) == CMDIT_OK, "add --help under stop mode");
     assert(cmdit_finalize(svhh) == CMDIT_OK, "the required check is still skipped for help");
+
+    test_group("1.3.5 the verb list's content is pinned");
+    # The listing was only ever checked for its return code. (1.3.5 caught itself
+    # reading a hidden flag one row too far, which no existing test noticed.)
+    var vlh = cmdit_new("tool");
+    cmdit_bool(vlh, 118, "verbose", "be verbose");
+    cmdit_verb(vlh, "add", "add a thing");
+    var vlr = cmdit_verb(vlh, "remove", "remove a thing");
+    cmdit_verb_alias(vlh, vlr, "rm");
+    cmdit_verb(vlh, "run", 0);
+    var vlb = alloc(4096);
+    var vlb2 = alloc(4096);
+    capture_render(vlh, 5, 2, vlb, 4096);
+    assert(cstreq(vlb, "\nCommands:\n  add\tadd a thing\n  remove\tremove a thing\n  run\n") == 1,
+      "verbs_help lists real verbs in order, aliases skipped");
+
+    test_group("1.3.5 help renderers take a stream; the stderr forms are unchanged");
+    capture_render(vlh, 3, 2, vlb, 4096);
+    capture_render(vlh, 0, 1, vlb2, 4096);
+    assert(contains(vlb, "Usage: tool [options] [args]") == 1, "help on stderr");
+    assert(cstreq(vlb, vlb2) == 1, "help_fd(h, 1) on stdout is byte-identical to help on stderr");
+    capture_render(vlh, 4, 2, vlb, 4096);
+    capture_render(vlh, 1, 1, vlb2, 4096);
+    assert(contains(vlb, "-v, --verbose\tbe verbose") == 1, "flag rows on stderr");
+    assert(cstreq(vlb, vlb2) == 1, "help_flags_fd(h, 1) matches help_flags");
+    capture_render(vlh, 5, 2, vlb, 4096);
+    capture_render(vlh, 2, 1, vlb2, 4096);
+    assert(cstreq(vlb, vlb2) == 1, "verbs_help_fd(h, 1) matches verbs_help");
+    capture_render(vlh, 0, 2, vlb2, 4096);
+    capture_render(vlh, 3, 2, vlb, 4096);
+    assert(cstreq(vlb, vlb2) == 1, "help_fd(h, 2) is exactly help(h)");
+    assert(cmdit_help_fd(0, 1) == 0 && cmdit_help_flags_fd(0, 1) == 0 && cmdit_verbs_help_fd(0, 1) == 0,
+      "the fd forms tolerate a 0 handle");
+
+    test_group("1.3.5 hidden verbs dispatch but stay out of help and completions");
+    var hvh = cmdit_new("tool");
+    cmdit_verb(hvh, "add", "add a thing");
+    var hvd = cmdit_verb(hvh, "debug", "internal");
+    cmdit_verb_alias(hvh, hvd, "dbg");
+    cmdit_verb(hvh, "run", "run it");
+    assert(cmdit_verb_hidden(hvh, hvd) == hvd, "hide returns the verb id");
+    assert(cmdit_verb_is_hidden(hvh, hvd) == 1, "the verb row reads hidden");
+    assert(cmdit_verb_is_hidden(hvh, 2) == 1, "its alias row reads hidden too");
+    assert(cmdit_verb_is_hidden(hvh, 0) == 0, "a visible verb reads visible");
+    capture_render(hvh, 5, 2, vlb, 4096);
+    assert(cstreq(vlb, "\nCommands:\n  add\tadd a thing\n  run\trun it\n") == 1, "verbs_help skips the hidden verb");
+    capture_render(hvh, 3, 2, vlb, 4096);
+    assert(contains(vlb, "debug") == 0, "help skips it");
+    var hvav = alloc(2 * 8); store64(hvav, "tool"); store64(hvav + 8, "debug");
+    assert(cmdit_dispatch_argv(hvh, 2, hvav) == CMDIT_OK, "a hidden verb still dispatches");
+    assert(cmdit_verb_matched(hvh) == hvd, "to its own id");
+    var hvh2 = cmdit_new("tool");
+    var hvd2 = cmdit_verb(hvh2, "debug", "");
+    cmdit_verb_alias(hvh2, hvd2, "dbg");
+    cmdit_verb_hidden(hvh2, hvd2);
+    store64(hvav + 8, "dbg");
+    assert(cmdit_dispatch_argv(hvh2, 2, hvav) == CMDIT_OK, "so does its alias");
+    assert(cmdit_verb_matched(hvh2) == hvd2, "to the hidden verb");
+    var hvh3 = cmdit_new("tool");
+    cmdit_verb(hvh3, "add", "");
+    var hvd3 = cmdit_verb(hvh3, "debug", "");
+    cmdit_verb_hidden(hvh3, hvd3);
+    store64(hvav + 8, "nope");
+    cmdit_dispatch_argv(hvh3, 2, hvav);
+    capture_print_error(hvh3, vlb, 4096);
+    assert(contains(vlb, "unknown command: nope") == 1, "an unknown verb still errors");
+    assert(contains(vlb, "  add") == 1, "and lists the visible verbs");
+    assert(contains(vlb, "debug") == 0, "but not the hidden one");
+    capture_completions(hvh, "bash", vlb, 4096);
+    assert(contains(vlb, "local verbs='add run'") == 1, "bash completes neither debug nor dbg");
+    capture_completions(hvh, "zsh", vlb, 4096);
+    assert(contains(vlb, "debug") == 0, "zsh skips it");
+    capture_completions(hvh, "fish", vlb, 4096);
+    assert(contains(vlb, "debug") == 0 && contains(vlb, "-a 'add'") == 1, "fish skips it");
+    # Hiding through an alias row hides the verb; the trailing mark still applies.
+    var hvh4 = cmdit_new("tool");
+    var hvd4 = cmdit_verb(hvh4, "exec", "");
+    cmdit_verb_alias(hvh4, hvd4, "x");
+    assert(cmdit_verb_hidden(hvh4, 1) == hvd4, "hiding the alias row hides the verb");
+    assert(cmdit_verb_is_hidden(hvh4, hvd4) == 1, "the verb reads hidden");
+    assert(cmdit_verb_trailing_after(hvh4, hvd4, 1) == hvd4, "a hidden verb can still be marked");
+    assert(cmdit_verb_hidden(hvh4, 9) == 0 - 1, "an id past the table -> -1");
+    assert(cmdit_verb_hidden(hvh4, 0 - 1) == 0 - 1, "a negative id -> -1");
+    assert(cmdit_verb_hidden(0, 0) == 0 - 1, "a 0 handle -> -1");
+    assert(cmdit_verb_hidden(cmdit_new("t"), 0) == 0 - 1, "no verb table -> -1");
+    assert(cmdit_verb_is_hidden(hvh4, 9) == 0, "is_hidden past the table -> 0");
+    # Every verb hidden: help prints no Commands header at all.
+    var hvh5 = cmdit_new("tool");
+    cmdit_verb_hidden(hvh5, cmdit_verb(hvh5, "debug", ""));
+    capture_render(hvh5, 3, 2, vlb, 4096);
+    assert(contains(vlb, "Commands:") == 0, "no empty Commands: block");
 
     return assert_summary();
 }

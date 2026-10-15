@@ -227,7 +227,7 @@ fn _fz_cmd_handle(): i64 {
     return h;
 }
 
-# A verb handle: two global flags, three verbs, one alias, one verbatim verb.
+# A verb handle: two global flags, three verbs, one alias, one verbatim verb, one hidden.
 fn _fz_verb_handle(): i64 {
     var h = cmdit_new("prog");
     cmdit_bool(h, 0, "verbose", "verbose");
@@ -237,6 +237,7 @@ fn _fz_verb_handle(): i64 {
     cmdit_verb_alias(h, v_rm, "rm");
     var v_exec = cmdit_verb(h, "exec", "exec");
     cmdit_verb_trailing_after(h, v_exec, 1);
+    cmdit_verb_hidden(h, v_rm);                                   # 1.3.5: hidden verbs still dispatch
     return h;
 }
 

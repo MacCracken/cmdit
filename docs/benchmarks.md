@@ -45,7 +45,12 @@ Host: AMD Ryzen 7 5800H, x86_64 Linux 7.2, `powersave` governor.
 | `dispatch_before_verb` | **172 ns** | 170–175 | 200 000 | single-pass dispatch, global flag **before** the verb |
 | `dispatch_after_verb` | **243 ns** | 240–245 | 200 000 | single-pass dispatch, global flag **after** the verb |
 | `repeat_accumulate_32` | 3.18 µs | 3.13–3.22 | 4096 | `cmdit_new` + 32 `-H` occurrences (lazy list alloc + 32 pushes) |
-| `verb_new_floor` | **2.83 µs** | 2.79–2.89 | 4096 | `cmdit_new` + the first `cmdit_verb` (allocates and zeroes the 4096-byte verb table); new in 1.3.2 |
+| `verb_new_floor` | **2.83 µs** | 2.79–2.89 | 4096 | `cmdit_new` + the first `cmdit_verb` (allocates and zeroes the verb table, 4096 B at 1.3.2); new in 1.3.2 |
+
+**Since 1.3.2:** 1.3.5 grew the verb row 32 → 40 B, for its hidden-verb flag. That makes the
+verb table 5120 B and adds ~0.2 µs to `verb_new_floor` (2.85 → 3.04 µs, interleaved medians).
+Dispatch moved +6–10 ns, which tracks code layout, not the stride; see CHANGELOG [1.3.5]. The
+table above is the 1.3.2 capture.
 
 Against 1.3.1, measured the same way, every row is within ±2.5% except `verb_new_floor`, which
 went **8.36 → 2.83 µs (−66%)** (below). Dispatch is up 2.4% (4–6 ns), consistent with the
