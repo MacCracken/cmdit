@@ -5,16 +5,16 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.3.3 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.3.4 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
 faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`); 1.3.2 is an
 audit sweep with a completion-script security fix; 1.3.3 adds `cmdit_err_token` /
-`cmdit_err_value` and error lines that name the offending text. **1.2.4 is a security
-release** — the completion generator interpolated the program name, which on the
-`cmdit_new(0)` path comes from `argv[0]`, raw into the scripts it emits; it also closes
-three memory-safety/contract defects. No API change. **Consumers on any earlier version that
-generate completions should update.**
+`cmdit_err_value` and error lines that name the offending text; 1.3.4 adds POSIX
+`cmdit_stop_at_positional`. **1.2.4 is a security release** — the completion generator
+interpolated the program name, which on the `cmdit_new(0)` path comes from `argv[0]`, raw
+into the scripts it emits; it also closes three memory-safety/contract defects. No API
+change. **Consumers on any earlier version that generate completions should update.**
 **License:** GPL-3.0-only. Distributed as
 `dist/cmdit.cyr` — consumers import it via `[deps.cmdit] modules = ["dist/cmdit.cyr"]`.
 
@@ -106,6 +106,8 @@ if (v == 0) {
   positionals a verbatim payload (`exec <container> <cmd>...`). Only positionals count
   toward `n`, so verb flags and globals before them still parse (1.3.2), and a `--` right at
   the threshold is consumed, kubectl-style (1.3.2).
+- **`cmdit_stop_at_positional(h, 1)`** on a verb handle makes the verb the first operand:
+  globals apply only before it, and a global after it goes to the verb's scope (1.3.4).
 - **One-pass caveats:** a global value flag right before the verb can take the verb as its
   value (`tool --config build install`), and a verb value flag whose separate value spells a
   global flag gives the global (`tool add --name --verbose`). Write `--config=build` /
@@ -150,7 +152,9 @@ constants, not API (do not depend on their values).
 - **Register:** `cmdit_bool` / `cmdit_int` / `cmdit_str` / `cmdit_enum` /
   `cmdit_repeat`; modifiers `cmdit_required` / `cmdit_range` / `cmdit_env` /
   `cmdit_metavar`; verbs `cmdit_verb` / `cmdit_verb_alias`; auto-flag config
-  `cmdit_help_short` / `cmdit_version_short`.
+  `cmdit_help_short` / `cmdit_version_short`; `cmdit_stop_at_positional(h, on)` (1.3.4:
+  POSIX — option recognition stops at the first positional, for tools whose operands are
+  another command line: `sudo`-shaped, `xargs`, `env`, `nice`).
 - **Read:** `cmdit_get_bool` / `cmdit_get_int` / `cmdit_get_str` / `cmdit_get_enum`,
   `cmdit_seen`, `cmdit_repeat_count` / `cmdit_repeat_get`, `cmdit_positional` /
   `cmdit_positional_count`, `cmdit_verb_matched` / `cmdit_verb_argc` /
@@ -249,6 +253,9 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
 - **1.3.3** — `cmdit_err_token` / `cmdit_err_value`: the argv token and the rejected value
   behind the last error (seven tools re-scanned argv for these). `cmdit_print_error` now
   prints them, with argv-derived text escaped. **562/562 tests**, 18/18 mutation-proven.
+- **1.3.4** — `cmdit_stop_at_positional(h, on)`: POSIX stop at the first positional (a lone
+  `-` included); a `--` after it stays data, unlike the per-verb trailing mark. Unblocks
+  shakti and kriya's `xargs`/`env`. **596/596 tests**, 7/7 mutation-proven.
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -257,6 +264,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (562/562)
+cyrius test                                          # run tests/*.tcyr  (596/596)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

@@ -1714,6 +1714,105 @@ fn main() {
     capture_version(exh3, "1.0", eb, 512);
     assert(cstreq(eb, "t? 1.0\n") == 1, "and in --version");
 
+    test_group("1.3.4 cmdit_stop_at_positional: POSIX stop at the first positional");
+    # shakti's grammar: its flags, then a command line that is entirely the child's.
+    var sp = cmdit_new("shakti");
+    var spu = cmdit_str(sp, 117, "user", "root", "");
+    var spk = cmdit_bool(sp, 107, "invalidate", "");
+    assert(cmdit_stop_at_positional(sp, 1) == 0, "setter returns 0");
+    var spav = alloc(8 * 8);
+    store64(spav, "shakti"); store64(spav + 8, "-u"); store64(spav + 16, "alice"); store64(spav + 24, "-k");
+    store64(spav + 32, "/bin/cmd"); store64(spav + 40, "arg1"); store64(spav + 48, "-x"); store64(spav + 56, "arg2");
+    assert(cmdit_parse_argv(sp, 8, spav) == CMDIT_OK, "flags, then a command with its own flags");
+    assert(cstreq(cmdit_get_str(sp, spu), "alice") == 1, "-u alice applied (its value is not the boundary)");
+    assert(cmdit_get_bool(sp, spk) == 1, "-k applied");
+    assert(cmdit_positional_count(sp) == 4, "the command line is 4 positionals");
+    assert(cmdit_positional(sp, 2) == load64(spav + 48), "-x after the command is data (shakti cli.tcyr:160)");
+    # `ls -1 | xargs rm --`: a `--` after the boundary belongs to the child.
+    var sx = cmdit_new("xargs");
+    cmdit_stop_at_positional(sx, 1);
+    var sxav = alloc(3 * 8); store64(sxav, "xargs"); store64(sxav + 8, "rm"); store64(sxav + 16, "--");
+    assert(cmdit_parse_argv(sx, 3, sxav) == CMDIT_OK, "xargs rm --");
+    assert(cmdit_positional_count(sx) == 2, "the -- is kept (kriya: eating it let rm delete a directory)");
+    assert(cmdit_positional(sx, 1) == load64(sxav + 16), "and passed through as data");
+    # A `--` BEFORE the boundary still ends the options, and is consumed.
+    var sd = cmdit_new("t");
+    cmdit_stop_at_positional(sd, 1);
+    var sdav = alloc(4 * 8);
+    store64(sdav, "t"); store64(sdav + 8, "--"); store64(sdav + 16, "-weird"); store64(sdav + 24, "x");
+    assert(cmdit_parse_argv(sd, 4, sdav) == CMDIT_OK, "-- -weird x");
+    assert(cmdit_positional_count(sd) == 2, "the leading -- is consumed");
+    assert(cmdit_positional(sd, 0) == load64(sdav + 16), "-weird is the first positional");
+    # A lone `-` is an operand (POSIX), so it stops option recognition too.
+    var sl = cmdit_new("t");
+    cmdit_bool(sl, 120, "x", "");
+    cmdit_stop_at_positional(sl, 1);
+    store64(sdav + 8, "-"); store64(sdav + 16, "-x");
+    assert(cmdit_parse_argv(sl, 3, sdav) == CMDIT_OK, "- -x");
+    assert(cmdit_positional_count(sl) == 2, "- and -x are both positionals");
+    assert(cmdit_get_bool(sl, 2) == 0, "-x after the - is not applied");
+    # Before the boundary the usual rules hold: an unknown flag is still an error.
+    var su = cmdit_new("t");
+    cmdit_stop_at_positional(su, 1);
+    store64(sdav + 8, "-z"); store64(sdav + 16, "cmd");
+    assert(cmdit_parse_argv(su, 3, sdav) == CMDIT_RESULT_ERR, "-z before the command fails");
+    assert(cmdit_error(su) == CMDIT_ERR_UNKNOWN, "-> UNKNOWN (xargs -5 echo: GNU says invalid option)");
+    # A bundled-looking token after the boundary is data, not BUNDLED.
+    var sb = cmdit_new("t");
+    cmdit_stop_at_positional(sb, 1);
+    store64(sdav + 8, "ls"); store64(sdav + 16, "-la");
+    assert(cmdit_parse_argv(sb, 3, sdav) == CMDIT_OK, "ls -la");
+    assert(cmdit_positional(sb, 1) == load64(sdav + 16), "-la is data");
+    # --help after the boundary is data; before it, help.
+    var sh1 = cmdit_new("t");
+    cmdit_stop_at_positional(sh1, 1);
+    store64(sdav + 8, "cmd"); store64(sdav + 16, "--help");
+    assert(cmdit_parse_argv(sh1, 3, sdav) == CMDIT_OK, "cmd --help is not help");
+    assert(cmdit_positional_count(sh1) == 2, "--help is the command's argument");
+    var sh2 = cmdit_new("t");
+    cmdit_stop_at_positional(sh2, 1);
+    store64(sdav + 8, "--help"); store64(sdav + 16, "cmd");
+    assert(cmdit_parse_argv(sh2, 3, sdav) == CMDIT_HELP, "--help cmd is help");
+    # Off by default, and the setter turns it back off.
+    var so = cmdit_new("t");
+    store64(sdav + 8, "cmd"); store64(sdav + 16, "-x");
+    assert(cmdit_parse_argv(so, 3, sdav) == CMDIT_RESULT_ERR, "default: -x after a positional is still a flag");
+    var so2 = cmdit_new("t");
+    cmdit_stop_at_positional(so2, 7);
+    cmdit_stop_at_positional(so2, 0);
+    assert(cmdit_parse_argv(so2, 3, sdav) == CMDIT_RESULT_ERR, "on (any non-zero), then off again");
+    assert(cmdit_stop_at_positional(0, 1) == 0 - 1, "a 0 handle -> -1");
+    var so3 = cmdit_new("t");
+    cmdit_stop_at_positional(so3, 7);
+    assert(cmdit_parse_argv(so3, 3, sdav) == CMDIT_OK, "any non-zero `on` enables the mode");
+
+    test_group("1.3.4 stop-at-positional on a verb handle: globals only before the verb");
+    var sv = cmdit_new("t");
+    var svj = cmdit_int(sv, 106, "jobs", 1, "");
+    cmdit_verb(sv, "run", "");
+    var svav = alloc(7 * 8);
+    store64(svav, "t"); store64(svav + 8, "--jobs"); store64(svav + 16, "2"); store64(svav + 24, "run");
+    store64(svav + 32, "--jobs"); store64(svav + 40, "5"); store64(svav + 48, "x");
+    var sv0 = cmdit_new("t");
+    var sv0j = cmdit_int(sv0, 106, "jobs", 1, "");
+    cmdit_verb(sv0, "run", "");
+    assert(cmdit_dispatch_argv(sv0, 7, svav) == CMDIT_OK, "default dispatch");
+    assert(cmdit_get_int(sv0, sv0j) == 5, "default: the global after the verb wins (before OR after)");
+    cmdit_stop_at_positional(sv, 1);
+    assert(cmdit_dispatch_argv(sv, 7, svav) == CMDIT_OK, "stop-mode dispatch");
+    assert(cmdit_get_int(sv, svj) == 2, "stop mode: only the global before the verb applies");
+    assert(cmdit_verb_argc(sv) == 4, "the after-verb --jobs 5 x go to the verb: run --jobs 5 x");
+    assert(load64(cmdit_verb_argv(sv) + 8) == load64(svav + 32), "--jobs is in the remainder");
+    # `tool add --help` still hands help to the verb, past a required global.
+    var svhh = cmdit_new("t");
+    var svr = cmdit_str(svhh, 0, "handle", 0, "");
+    cmdit_required(svhh, svr);
+    cmdit_verb(svhh, "add", "");
+    cmdit_stop_at_positional(svhh, 1);
+    store64(svav + 8, "add"); store64(svav + 16, "--help");
+    assert(cmdit_dispatch_argv(svhh, 3, svav) == CMDIT_OK, "add --help under stop mode");
+    assert(cmdit_finalize(svhh) == CMDIT_OK, "the required check is still skipped for help");
+
     return assert_summary();
 }
 

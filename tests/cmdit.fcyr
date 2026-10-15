@@ -22,6 +22,9 @@
 #   I7  (1.3.3) a clean result carries no err_token / err_value; a token is
 #       pointer-identical to an argv token; a value points inside one, and is set
 #       exactly when the error rejects a value
+#   I8  (1.3.4) under cmdit_stop_at_positional, a clean parse's positionals are a
+#       contiguous suffix of argv, and a dispatch's remainder is exactly argv from
+#       the verb on — no global after the verb is applied
 #
 # Every 50th argv is long (up to 400 tokens) and mostly positional-shaped, with
 # frequent -H, so the parse usually runs past the 128-positional and 64-repeat
@@ -324,6 +327,21 @@ fn _fz_cmd_iter(): i64 {
         }
     }
 
+    # I8: POSIX stop mode — the positionals are a contiguous suffix of argv.
+    var h4 = _fz_cmd_handle();
+    cmdit_stop_at_positional(h4, 1);
+    var rc4 = cmdit_parse_argv(h4, _fz_argc, _fz_argv);
+    _fz_check_result(h4, rc4, FZ_NFLAGS);
+    if (rc4 != CMDIT_RESULT_ERR) {
+        var np4 = cmdit_positional_count(h4);
+        var k4 = 0;
+        while (k4 < np4) {
+            var want = load64(_fz_argv + (_fz_argc - np4 + k4) * 8);
+            _fz_check(cmdit_positional(h4, k4) == want, "I8 stop-mode positionals are not a suffix of argv");
+            k4 = k4 + 1;
+        }
+    }
+
     # I6: a second fresh handle agrees; a handle that already failed agrees on the error.
     var h2 = _fz_cmd_handle();
     var rc2 = cmdit_parse_argv(h2, _fz_argc, _fz_argv);
@@ -372,6 +390,25 @@ fn _fz_verb_iter(): i64 {
             cmdit_str(vh, 110, "name", 0, "name");
             var vr = cmdit_parse_verb(vh, h);
             _fz_check_result(vh, vr, 3);
+        }
+    }
+
+    # I8: POSIX stop mode on a verb handle — the remainder is argv from the verb on.
+    var h4 = _fz_verb_handle();
+    cmdit_stop_at_positional(h4, 1);
+    var rc4 = cmdit_dispatch_argv(h4, _fz_argc, _fz_argv);
+    _fz_check_result(h4, rc4, 4);
+    if (rc4 == CMDIT_OK && cmdit_verb_matched(h4) >= 0) {
+        var va4 = cmdit_verb_argc(h4);
+        var vv4 = cmdit_verb_argv(h4);
+        var vi = _fz_argc - va4;
+        _fz_check(vi >= 1, "I8 stop-mode remainder longer than argv");
+        _fz_check(load64(vv4) == load64(_fz_argv + vi * 8), "I8 stop-mode remainder does not start at the verb");
+        var k5 = 0;
+        while (k5 < va4) {
+            var got5 = load64(vv4 + k5 * 8);
+            _fz_check(got5 == load64(_fz_argv + (vi + k5) * 8), "I8 stop-mode remainder is not argv's tail");
+            k5 = k5 + 1;
         }
     }
 

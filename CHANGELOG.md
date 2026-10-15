@@ -4,6 +4,67 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-10-14
+
+**POSIX stop-at-first-positional: `cmdit_stop_at_positional(h, on)`.** This is the second
+pinned 1.3.x item, and shakti's last adoption blocker. kriya's `xargs` / `env` need it too.
+It is one append-only setter (ctx grows 184 → 192 B). **562 → 596 assertions**, 7/7 seeded
+reverts caught, and benches within ±2.5% of 1.3.3.
+
+### Added — `cmdit_stop_at_positional(h, on)`
+
+With `on` non-zero, option recognition stops at the first positional: a token that does not
+start with `-`, **a lone `-` included**. That token and every later one are positionals,
+whatever they look like, so flags, `--`, `--help` and bundled-looking `-la` after the boundary
+are all data. A `--` before the boundary still ends the options and is consumed. Value flags
+before the boundary still take their value, so `shakti -u bob ls -la` puts the boundary at
+`ls`. That is the property kriya's own notes call "the whole difficulty" of a hand-written
+version, and the parse loop gets it for free because it already knows each flag's arity. An
+unknown flag before the boundary is still an error, as GNU makes it (`xargs -5 echo`).
+
+On a handle with verbs, the verb **is** the first positional. Globals are applied only before
+it, and a global flag after it goes to the verb's scope with everything else (by default
+cmdit applies globals before or after the verb). The 1.3.2 help hand-off still works under
+the mode, so `tool add --help` is not blocked by a required global.
+
+This matches stdlib `flags_set_stop_at_positional`, with one deliberate difference: there a
+lone `-` is a positional but does not stop recognition. POSIX says it is an operand, and
+kriya's `kriya_argv_option_end` treats it as one, so in cmdit it stops recognition.
+
+### Why not the per-verb trailing mechanism
+
+The roadmap pinned this as "reusing the per-verb trailing-verbatim mechanism". It cannot, and
+the reason is a real bug in kriya's history. Since 1.3.2, `cmdit_verb_trailing_after`
+**consumes** a `--` that sits exactly at its threshold (kubectl-style, so `exec c1 -- ls`
+runs `ls`). POSIX stop must do the opposite: after the first operand, `--` belongs to the
+command. kriya records what eating it did: `ls -1 | xargs rm --` handed `rm` an argument list
+beginning `-r` and **recursively deleted a directory the `--` was written to protect**. So the
+mode is its own flag (ctx `+184`), checked as each positional is stored, and a test pins
+`xargs rm --` keeping its `--`. `cmdit_verb_trailing_after` is unchanged, and remains the tool
+for a verb whose first `n` positionals are its own (`exec <container> <cmd>...`).
+
+### Tests
+
+- **+34 assertions (562 → 596):**
+  - shakti's grammar end to end, including its pinned case (`-x` after the command is data);
+  - kriya's `xargs rm --`;
+  - a leading `--`, a lone `-`, an unknown flag before the boundary, `ls -la`;
+  - `--help` after the boundary as data and before it as help;
+  - off by default, any non-zero `on` enabling it, and a 0 handle;
+  - on a verb handle: globals only before the verb, the remainder carrying the after-verb
+    flags, and `add --help` past a required global.
+- **Fuzz invariant I8:** under the mode, a clean parse's positionals are a contiguous suffix
+  of argv, pointer for pointer. A dispatch's remainder is exactly argv from the verb on.
+- **Mutation-proven, 7/7:**
+  - the stop removed;
+  - a lone `-` not stopping;
+  - the setter storing `on` raw (caught after a test for `on = 7` was added);
+  - globals applied after the verb;
+  - the help hand-off hidden by the mode;
+  - the null guard;
+  - a `--` at the boundary consumed (kriya's bug).
+- The bundle passes 596/596 on a 6.6.2 compiler.
+
 ## [1.3.3] - 2026-10-14
 
 **The offending token: `cmdit_err_token` / `cmdit_err_value`, and error lines that say what
