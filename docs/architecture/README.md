@@ -6,4 +6,5 @@ Not decisions (those live in [`../adr/`](../adr/)) and not guides (those live in
 
 ## Items
 
-_Empty. Add a numbered entry (`001-kebab-case-title.md`) the first time the code has a non-obvious invariant a reader can't derive. Do not write entries for decisions — those are ADRs._
+- [001 — The flag and verb tables move when they grow](001-tables-move-when-they-grow.md) (1.4.0)
+- [002 — Every write goes through an output session](002-every-write-goes-through-an-output-session.md) (1.4.0)

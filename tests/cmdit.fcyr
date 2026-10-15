@@ -35,7 +35,7 @@
 # frequent -H, so the parse usually runs past the 128-positional and 64-repeat
 # initial capacities and exercises the 1.3.1 growth paths.
 #
-# alloc_reset() between iterations keeps memory flat (cmdit_new is ~7.8 KB of a
+# alloc_reset() between iterations keeps memory flat (cmdit_new allocates ~3 KB from a
 # free-less bump allocator), so the iteration count is not memory-bound.
 # A failure prints the invariant, seed, iteration and argv, then exits 1.
 include "lib/vec.cyr"      # vec_get (transitively referenced by string/alloc)
@@ -212,13 +212,13 @@ fn _fz_is_argv_token(p): i64 {
     return 0;
 }
 
-# Single-command flag set. Indices: 0 help, 1 version (auto), then 2..7.
+# Single-command flag set. Indices: 0 help, 1 version (auto), then 2..7, then 10 fillers.
 var FZ_F_NAME = 2;
 var FZ_F_COUNT = 3;
 var FZ_F_COLOR = 5;
 var FZ_F_HEADER = 6;
 var FZ_F_REQ = 7;
-var FZ_NFLAGS = 8;
+var FZ_NFLAGS = 18;        # 1.4.0: + 10 filler flags, past the 16-entry first table
 
 # A single-command handle using every modifier.
 fn _fz_cmd_handle(): i64 {
@@ -236,10 +236,15 @@ fn _fz_cmd_handle(): i64 {
     cmdit_long_alias(h, f_hdr, "hdr");                            # 1.3.6
     var f_req = cmdit_bool(h, 0, "i-mean-it", "required");
     cmdit_required(h, f_req);
+    # 1.4.0: ten more, so the entry table grows from 16 to 32 inside every iteration
+    # and the parse and the lookups (I9) run over a table that has moved.
+    var k = 0;
+    while (k < 10) { cmdit_bool(h, 0, "fill", ""); k = k + 1; }
     return h;
 }
 
-# A verb handle: two global flags, three verbs, one alias, one verbatim verb, one hidden.
+# A verb handle: two global flags, three verbs, one alias, one verbatim verb, one hidden,
+# and filler rows.
 fn _fz_verb_handle(): i64 {
     var h = cmdit_new("prog");
     cmdit_bool(h, 0, "verbose", "verbose");
@@ -250,6 +255,9 @@ fn _fz_verb_handle(): i64 {
     var v_exec = cmdit_verb(h, "exec", "exec");
     cmdit_verb_trailing_after(h, v_exec, 1);
     cmdit_verb_hidden(h, v_rm);                                   # 1.3.5: hidden verbs still dispatch
+    # 1.4.0: twelve more rows, so the verb table grows from 16 to 32 every iteration.
+    var k = 0;
+    while (k < 12) { cmdit_verb(h, "fill", ""); k = k + 1; }
     return h;
 }
 

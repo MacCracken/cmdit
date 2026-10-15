@@ -4,6 +4,122 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-14
+
+**Refactor and optimization sweep: no new API, byte-identical output, and faster.** Every
+change is internal. The public API and error codes are unchanged, and every byte cmdit
+prints is the same. A fixture covering every renderer, 20 error lines and all three
+completion scripts over 7 handle shapes (20,724 bytes) was diffed against 1.3.7 after
+every step. A parse is about 2× faster, a verb tool's setup 4×, and `--help`, an error line
+and a completion script 6–12×. **786 → 887 assertions**; 27 of 31 seeded reverts are caught, and
+the 4 survivors are unobservable.
+
+### Refactor
+
+- **Named field offsets.** The 255 literal offsets into the handle, a flag entry and a verb
+  row (`h + 104`, `ep + 48`, `row + 16`) are now private `CmditOffset` names
+  (`_CMDIT_H_VERBS`, `_CMDIT_E_ATTRS`, `_CMDIT_V_CANON`). A literal is how 1.3.5's verb
+  renderer kept reading +32 after the row grew. **Proof:** the names were added in one step and
+  swapped in the next, and the seven binaries (smoke, verbs, completions, tests, fuzz, bench
+  and the fixture) came out byte-identical. An offset-0 field stays bare (`load64(h)`),
+  because `+ 0` costs an instruction.
+- **One token-to-flag path.** The parse core resolved and applied a flag at two sites (long and
+  short), and the dispatcher at a third, and they had drifted: 1.3.2 fixed a BUNDLED/UNKNOWN
+  divergence between them, and 1.3.6 had to add its flag-shaped-value refusal three times. Both
+  cores now call one `_cmdit_take_flag`. After the verb, the dispatcher used to look each flag
+  up twice (once to spot `--help`, once to apply it); it now looks it up once.
+- **Shared guards and helpers.** The verb setters and getters resolve an id through
+  `cmdit_verb_canonical_at` instead of four copies of the same guard ladder. One
+  `_cmdit_zero` replaces the two table-zeroing loops.
+- **The test suite is 113 group functions**, not one ~2,300-line `main` whose fixture names all
+  had to be unique (a collision was a build error, several times in 1.3.x). The split was
+  checked by identical suite output before and after, and by an identical statement sequence.
+
+### Optimization
+
+Interleaved 1.3.7 against 1.4.0, median of 11 runs each, at load average ~1.9 (one unrelated
+single-core compile was running):
+
+| bench | 1.3.7 | 1.4.0 | change | from |
+|---|---|---|---|---|
+| `cmdit_new_floor` | 2.03 µs | 0.76 µs | −63% | the entry table that grows |
+| `setup_baseline` | 1.99 µs | 0.75 µs | −62% | the same |
+| `parse_argv_mixed` | 2.44 µs | 1.16 µs | −53% | the same, and the lookup |
+| `repeat_accumulate_32` | 3.28 µs | 1.84 µs | −44% | the same |
+| `verb_new_floor` | 3.29 µs | 0.81 µs | −75% | both tables growing |
+| `dispatch_before_verb` | 172 ns | 167 ns | −3% | |
+| `dispatch_after_verb` | 242 ns | 177 ns | −27% | one lookup per flag after the verb, not two |
+| `flag_find_long` | 78 ns | 47 ns | −40% | the lookup |
+| `flag_find_long_36` | 396 ns | 152 ns | −62% | the same, over attn11's 36 names |
+| `help_fd_devnull` | 33.8 µs | 2.9 µs | −91% | buffered output |
+| `print_error_devnull` | 4.75 µs | 0.77 µs | −84% | the same |
+| `completions_devnull` | 161 µs | 14.9 µs | −91% | the same |
+| `get_enum_rewalk` | 92 ns | 98 ns | **+6.5%** | code layout, below |
+
+**`get_enum_rewalk` is the one regression, and its code did not change.** The field-offset
+swap compiles byte-identically, and the functions on its path are the same. Inserting unused
+padding functions ahead of `_cmdit_enum_find` moves the same source between 95 and 101 ns.
+So the 6 ns is where the code landed, not what it does. It is recorded here, not tuned away
+with padding that the next edit would undo. On its own, the one token-to-flag path cost a
+32-flag parse +3.7% (one more call level per flag token); the growing entry table repays that
+many times over.
+
+- **Buffered output.** Every renderer used to make one write(2) per fragment: 93 for one
+  `--help`, 13 for one error line, and one per byte of quoted help in a completion script. Each
+  public renderer now opens an output session, which flushes before it returns, so one call is
+  one write. Its output still lands before anything the caller writes next. An error line now
+  reaches a pipe in one write, so another process's stderr cannot split it. The buffer is
+  allocated on first use: a global 4 KB array would have added 32 KB to every consumer's
+  binary. The final write also retries a short write and EINTR, which the ignored write results
+  never did.
+- **Tables that grow.** The flag table starts at 16 entries and the verb table at 16 rows,
+  each doubling to its unchanged cap of 64 / 128. `cmdit_new` allocated and zeroed all 64
+  entries (7,680 B), and the first `cmdit_verb` all 128 rows (6,144 B), for tools with a
+  handful. `err_entry`, the one entry pointer a handle keeps, moves with its table, so
+  `cmdit_err_flag` stays right when flags are registered after a failed parse.
+  - Memory: `cmdit_new` allocates 3,136 B (was 8,896), and the first verb 768 B (was 6,144). A
+    tool that fills all 64 flags allocates 13,440 B of entry tables over the moves (was 7,680),
+    since the bump allocator never frees the old ones.
+- **Long-name lookup.** The parser's `--name` scan compares a name's first byte before calling
+  the full compare, and walks a pointer instead of calling `_cmdit_entry` per row. Over attn11's
+  36 real flag names (38 entries with `--help` and `--version`), a lookup makes 3 calls
+  instead of 76.
+
+### Tests
+
+- **+101 assertions (786 → 887):** output sessions (the order against the caller's writes,
+  nesting on one stream and across two, a write to another stream mid-session, pieces up to and
+  past the buffer, every renderer closing its session), both tables moving (every modifier,
+  mark and attached handle surviving, `err_entry` after a failed parse, the caps), and the
+  lookup prefilter (shared first bytes, an empty span).
+- **Fuzz:** both handles are padded past 16 flags / 16 verb rows, so the tables grow inside
+  every iteration and I9 checks lookups over a moved table.
+- **Benchmarks 9 → 13:** `flag_find_long_36` over attn11's real names, and `help_fd_devnull`,
+  `print_error_devnull` and `completions_devnull` for the output paths.
+- **Mutation, 27/31.** The first round left three real gaps, all closed:
+  - the last verb row before a move;
+  - a write to another stream mid-session;
+  - a piece larger than the buffer being copied into it.
+
+  It also showed one clause in the session close to be redundant, so that clause was removed.
+  The four survivors are unobservable:
+  - the byte-tail loop of `_cmdit_zero`, since every size is a multiple of 8;
+  - the retry of a short write, which needs an interrupted writer;
+  - the zeroing of each grown table's tail, because the stdlib's `alloc` already returns
+    zeroed memory.
+- The bundle passes 887/887 on a 6.6.2 compiler.
+
+### Docs
+
+- **Roadmap:** now forward-facing only. Nothing is scheduled, so it is an open intake for
+  consumer requests and issues, plus the watched cyrius issue, adoption, the v2 backlog and
+  out-of-scope.
+- **Architecture notes**
+  [001](docs/architecture/001-tables-move-when-they-grow.md) (the tables move when they
+  grow) and [002](docs/architecture/002-every-write-goes-through-an-output-session.md) (every
+  write goes through an output session).
+- **Adoption notes:** kriya's and ark's are updated for 1.3.x and 1.4.0.
+
 ## [1.3.7] - 2026-10-14
 
 **Flag-table introspection, and each verb's own flags in the completion scripts.** This is the

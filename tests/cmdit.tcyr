@@ -167,10 +167,8 @@ fn index_of(hay, needle): i64 {
     return 0 - 1;
 }
 
-# Run every test group against the pure parse/dispatch cores and the renderers.
-fn main() {
-    alloc_init();
-
+# parse: bool / int / str + positional (-c 5 --name bob file.txt)
+fn g001_parse_bool_int_str(): i64 {
     test_group("parse: bool / int / str + positional (-c 5 --name bob file.txt)");
     var h = cmdit_new("t");
     var fL = cmdit_bool(h, 0, "loud", "");
@@ -186,14 +184,22 @@ fn main() {
     assert(cstreq(cmdit_get_str(h, fN), "bob") == 1, "--name bob parsed");
     assert(cmdit_positional_count(h) == 1, "one positional");
     assert(cstreq(cmdit_positional(h, 0), "file.txt") == 1, "positional = file.txt");
+    return 0;
+}
 
+# parse: --key=value attached form
+fn g002_parse_key_value_attached(): i64 {
     test_group("parse: --key=value attached form");
     var h2 = cmdit_new("t");
     var c2 = cmdit_int(h2, 99, "count", 1, "");
     var av2 = alloc(2 * 8); store64(av2, "t"); store64(av2 + 8, "--count=7");
     assert(cmdit_parse_argv(h2, 2, av2) == CMDIT_OK, "parse OK");
     assert(cmdit_get_int(h2, c2) == 7, "--count=7 parsed");
+    return 0;
+}
 
+# parse: -- terminator stops flag parsing
+fn g003_parse_terminator_stops_flag(): i64 {
     test_group("parse: -- terminator stops flag parsing");
     var h3 = cmdit_new("t");
     var l3 = cmdit_bool(h3, 0, "loud", "");
@@ -202,33 +208,53 @@ fn main() {
     assert(cmdit_get_bool(h3, l3) == 0, "--loud after -- NOT parsed as flag");
     assert(cmdit_positional_count(h3) == 1, "one positional");
     assert(cstreq(cmdit_positional(h3, 0), "--loud") == 1, "positional captured verbatim");
+    return 0;
+}
 
+# parse: lone '-' is a positional (stdin convention)
+fn g004_parse_lone_positional_stdin(): i64 {
     test_group("parse: lone '-' is a positional (stdin convention)");
     var h4 = cmdit_new("t");
     var av4 = alloc(2 * 8); store64(av4, "t"); store64(av4 + 8, "-");
     assert(cmdit_parse_argv(h4, 2, av4) == CMDIT_OK, "parse OK");
     assert(cmdit_positional_count(h4) == 1, "lone dash -> positional");
+    return 0;
+}
 
+# error: unknown flag -> CMDIT_ERR_UNKNOWN
+fn g005_error_unknown_flag_cmdit(): i64 {
     test_group("error: unknown flag -> CMDIT_ERR_UNKNOWN");
     var h5 = cmdit_new("t");
     var av5 = alloc(2 * 8); store64(av5, "t"); store64(av5 + 8, "--nope");
     assert(cmdit_parse_argv(h5, 2, av5) == CMDIT_RESULT_ERR, "unknown -> RESULT_ERR");
     assert(cmdit_error(h5) == CMDIT_ERR_UNKNOWN, "error code = UNKNOWN");
+    return 0;
+}
 
+# error: missing value for last arg -> MISSING_VALUE
+fn g006_error_missing_value_last(): i64 {
     test_group("error: missing value for last arg -> MISSING_VALUE");
     var h6 = cmdit_new("t");
     var n6 = cmdit_str(h6, 110, "name", 0, "");
     var av6 = alloc(2 * 8); store64(av6, "t"); store64(av6 + 8, "--name");
     assert(cmdit_parse_argv(h6, 2, av6) == CMDIT_RESULT_ERR, "missing value -> RESULT_ERR");
     assert(cmdit_error(h6) == CMDIT_ERR_MISSING_VALUE, "error code = MISSING_VALUE");
+    return 0;
+}
 
+# error: non-numeric int -> BAD_INT
+fn g007_error_non_numeric_int(): i64 {
     test_group("error: non-numeric int -> BAD_INT");
     var h7 = cmdit_new("t");
     var c7 = cmdit_int(h7, 99, "count", 1, "");
     var av7 = alloc(3 * 8); store64(av7, "t"); store64(av7 + 8, "-c"); store64(av7 + 16, "abc");
     assert(cmdit_parse_argv(h7, 3, av7) == CMDIT_RESULT_ERR, "bad int -> RESULT_ERR");
     assert(cmdit_error(h7) == CMDIT_ERR_BAD_INT, "error code = BAD_INT");
+    return 0;
+}
 
+# error: int overflow rejected, not wrapped (no range bypass)
+fn g008_error_int_overflow_rejected(): i64 {
     test_group("error: int overflow rejected, not wrapped (no range bypass)");
     var h7o = cmdit_new("t");
     var c7o = cmdit_int(h7o, 99, "count", 1, "");
@@ -250,23 +276,39 @@ fn main() {
     var av7m = alloc(3 * 8); store64(av7m, "t"); store64(av7m + 8, "-c"); store64(av7m + 16, "9223372036854775807");
     assert(cmdit_parse_argv(h7m, 3, av7m) == CMDIT_OK, "i64 max still accepted");
     assert(cmdit_get_int(h7m, c7m) == 9223372036854775807, "i64 max value stored exactly");
+    return 0;
+}
 
+# error: bundled/attached short -> BUNDLED
+fn g009_error_bundled_attached_short(): i64 {
     test_group("error: bundled/attached short -> BUNDLED");
     var h8 = cmdit_new("t");
     var av8 = alloc(2 * 8); store64(av8, "t"); store64(av8 + 8, "-xy");
     assert(cmdit_parse_argv(h8, 2, av8) == CMDIT_RESULT_ERR, "bundled -> RESULT_ERR");
     assert(cmdit_error(h8) == CMDIT_ERR_BUNDLED, "error code = BUNDLED");
+    return 0;
+}
 
+# auto: --help short-circuits to CMDIT_HELP
+fn g010_auto_help_short_circuits(): i64 {
     test_group("auto: --help short-circuits to CMDIT_HELP");
     var h9 = cmdit_new("t");
     var av9 = alloc(2 * 8); store64(av9, "t"); store64(av9 + 8, "--help");
     assert(cmdit_parse_argv(h9, 2, av9) == CMDIT_HELP, "--help -> CMDIT_HELP");
+    return 0;
+}
 
+# auto: -V short-circuits to CMDIT_VERSION
+fn g011_auto_v_short_circuits(): i64 {
     test_group("auto: -V short-circuits to CMDIT_VERSION");
     var h10 = cmdit_new("t");
     var av10 = alloc(2 * 8); store64(av10, "t"); store64(av10 + 8, "-V");
     assert(cmdit_parse_argv(h10, 2, av10) == CMDIT_VERSION, "-V -> CMDIT_VERSION");
+    return 0;
+}
 
+# C5: remap / disable the auto -h / -V short letters
+fn g012_c5_remap_disable_auto(): i64 {
     test_group("C5: remap / disable the auto -h / -V short letters");
     var h5a = cmdit_new("t"); cmdit_help_short(h5a, 63);                          # remap help to '?'
     var av5a = alloc(2 * 8); store64(av5a, "t"); store64(av5a + 8, "-?");
@@ -285,16 +327,24 @@ fn main() {
     var h5c = cmdit_new("t"); cmdit_version_short(h5c, 118);                      # remap version to '-v'
     var av5c = alloc(2 * 8); store64(av5c, "t"); store64(av5c + 8, "-v");
     assert(cmdit_parse_argv(h5c, 2, av5c) == CMDIT_VERSION, "remapped -v -> CMDIT_VERSION");
+    return 0;
+}
 
+# defaults: absent flag keeps its registered default
+fn g013_defaults_absent_flag_keeps(): i64 {
     test_group("defaults: absent flag keeps its registered default");
     var h11 = cmdit_new("t");
     var c11 = cmdit_int(h11, 99, "count", 42, "");
     var av11 = alloc(1 * 8); store64(av11, "t");
     assert(cmdit_parse_argv(h11, 1, av11) == CMDIT_OK, "parse OK");
     assert(cmdit_get_int(h11, c11) == 42, "default 42 preserved");
+    return 0;
+}
 
-    # --- 0.2.0 flag modifiers ------------------------------------------------
+# --- 0.2.0 flag modifiers ------------------------------------------------
 
+# enum: valid choice accepted; get_str + get_enum index
+fn g014_enum_valid_choice_accepted(): i64 {
     test_group("enum: valid choice accepted; get_str + get_enum index");
     var he = cmdit_new("t");
     var fe = cmdit_enum(he, 0, "color", "auto", "auto|always|never", "");
@@ -302,21 +352,33 @@ fn main() {
     assert(cmdit_parse_argv(he, 3, ave) == CMDIT_OK, "enum valid -> OK");
     assert(cstreq(cmdit_get_str(he, fe), "never") == 1, "raw choice = never");
     assert(cmdit_get_enum(he, fe) == 2, "enum index of never = 2");
+    return 0;
+}
 
+# enum: =value form + first/middle index
+fn g015_enum_value_form_first(): i64 {
     test_group("enum: =value form + first/middle index");
     var he2 = cmdit_new("t");
     var fe2 = cmdit_enum(he2, 0, "color", "auto", "auto|always|never", "");
     var ave2 = alloc(2 * 8); store64(ave2, "t"); store64(ave2 + 8, "--color=always");
     assert(cmdit_parse_argv(he2, 2, ave2) == CMDIT_OK, "enum =value -> OK");
     assert(cmdit_get_enum(he2, fe2) == 1, "enum index of always = 1");
+    return 0;
+}
 
+# enum: invalid choice -> BAD_ENUM
+fn g016_enum_invalid_choice_bad(): i64 {
     test_group("enum: invalid choice -> BAD_ENUM");
     var he3 = cmdit_new("t");
     var fe3 = cmdit_enum(he3, 0, "color", "auto", "auto|always|never", "");
     var ave3 = alloc(3 * 8); store64(ave3, "t"); store64(ave3 + 8, "--color"); store64(ave3 + 16, "purple");
     assert(cmdit_parse_argv(he3, 3, ave3) == CMDIT_RESULT_ERR, "bad enum -> RESULT_ERR");
     assert(cmdit_error(he3) == CMDIT_ERR_BAD_ENUM, "error code = BAD_ENUM");
+    return 0;
+}
 
+# enum: absent keeps default choice + its index
+fn g017_enum_absent_keeps_default(): i64 {
     test_group("enum: absent keeps default choice + its index");
     var he4 = cmdit_new("t");
     var fe4 = cmdit_enum(he4, 0, "color", "auto", "auto|always|never", "");
@@ -324,7 +386,11 @@ fn main() {
     assert(cmdit_parse_argv(he4, 1, ave4) == CMDIT_OK, "absent enum -> OK");
     assert(cstreq(cmdit_get_str(he4, fe4), "auto") == 1, "default choice = auto");
     assert(cmdit_get_enum(he4, fe4) == 0, "default index = 0");
+    return 0;
+}
 
+# range: in-range OK; boundaries inclusive
+fn g018_range_range_ok_boundaries(): i64 {
     test_group("range: in-range OK; boundaries inclusive");
     var hr = cmdit_new("t");
     var fr = cmdit_int(hr, 0, "width", 80, ""); cmdit_range(hr, fr, 1, 4096);
@@ -335,7 +401,11 @@ fn main() {
     var fr1 = cmdit_int(hr1, 0, "width", 80, ""); cmdit_range(hr1, fr1, 1, 4096);
     var avr1 = alloc(3 * 8); store64(avr1, "t"); store64(avr1 + 8, "--width"); store64(avr1 + 16, "1");
     assert(cmdit_parse_argv(hr1, 3, avr1) == CMDIT_OK, "min boundary 1 accepted");
+    return 0;
+}
 
+# range: below min / above max -> OUT_OF_RANGE
+fn g019_range_below_min_above(): i64 {
     test_group("range: below min / above max -> OUT_OF_RANGE");
     var hr2 = cmdit_new("t");
     var fr2 = cmdit_int(hr2, 0, "width", 80, ""); cmdit_range(hr2, fr2, 1, 4096);
@@ -347,7 +417,11 @@ fn main() {
     var avr3 = alloc(3 * 8); store64(avr3, "t"); store64(avr3 + 8, "--width"); store64(avr3 + 16, "4097");
     assert(cmdit_parse_argv(hr3, 3, avr3) == CMDIT_RESULT_ERR, "4097 above max -> RESULT_ERR");
     assert(cmdit_error(hr3) == CMDIT_ERR_OUT_OF_RANGE, "error code = OUT_OF_RANGE");
+    return 0;
+}
 
+# required: present -> finalize OK; seen reflects it
+fn g020_required_present_finalize_ok(): i64 {
     test_group("required: present -> finalize OK; seen reflects it");
     var hq = cmdit_new("t");
     var fq = cmdit_str(hq, 0, "handle", 0, ""); cmdit_required(hq, fq);
@@ -355,7 +429,11 @@ fn main() {
     assert(cmdit_parse_argv(hq, 3, avq) == CMDIT_OK, "parse OK");
     assert(cmdit_seen(hq, fq) == 1, "seen = 1 after CLI set");
     assert(cmdit_finalize(hq) == CMDIT_OK, "finalize OK (required satisfied)");
+    return 0;
+}
 
+# required: absent str -> REQUIRED_MISSING at finalize
+fn g021_required_absent_str_required(): i64 {
     test_group("required: absent str -> REQUIRED_MISSING at finalize");
     var hq2 = cmdit_new("t");
     var fq2 = cmdit_str(hq2, 0, "handle", 0, ""); cmdit_required(hq2, fq2);
@@ -364,7 +442,11 @@ fn main() {
     assert(cmdit_seen(hq2, fq2) == 0, "seen = 0 when absent");
     assert(cmdit_finalize(hq2) == CMDIT_RESULT_ERR, "finalize -> RESULT_ERR");
     assert(cmdit_error(hq2) == CMDIT_ERR_REQUIRED_MISSING, "error code = REQUIRED_MISSING");
+    return 0;
+}
 
+# required: bool distinguishes absent from explicit-false
+fn g022_required_bool_distinguishes_absent(): i64 {
     test_group("required: bool distinguishes absent from explicit-false");
     var hq3 = cmdit_new("t");
     var fq3 = cmdit_bool(hq3, 0, "i-mean-it", ""); cmdit_required(hq3, fq3);
@@ -378,7 +460,11 @@ fn main() {
     assert(cmdit_parse_argv(hq4, 2, avq4) == CMDIT_OK, "present bool parse OK");
     assert(cmdit_finalize(hq4) == CMDIT_OK, "required bool present -> finalize OK");
     assert(cmdit_get_bool(hq4, fq4) == 1, "bool value = 1");
+    return 0;
+}
 
+# repeat: multiple occurrences accumulate in argv order
+fn g023_repeat_multiple_occurrences_accumulate(): i64 {
     test_group("repeat: multiple occurrences accumulate in argv order");
     var hp = cmdit_new("t");
     var fp = cmdit_repeat(hp, 72, "header", "");      # -H
@@ -391,7 +477,11 @@ fn main() {
     assert(cstreq(cmdit_repeat_get(hp, fp, 1), "B: 2") == 1, "second = B: 2");
     assert(cstreq(cmdit_get_str(hp, fp), "B: 2") == 1, "get_str = last occurrence");
     assert(cmdit_repeat_get(hp, fp, 2) == 0, "out-of-range get -> 0");
+    return 0;
+}
 
+# repeat: zero occurrences -> count 0
+fn g024_repeat_zero_occurrences_count(): i64 {
     test_group("repeat: zero occurrences -> count 0");
     var hp2 = cmdit_new("t");
     var fp2 = cmdit_repeat(hp2, 72, "header", "");
@@ -399,12 +489,17 @@ fn main() {
     assert(cmdit_parse_argv(hp2, 1, avp2) == CMDIT_OK, "no -H parse OK");
     assert(cmdit_repeat_count(hp2, fp2) == 0, "count = 0");
     assert(cmdit_repeat_get(hp2, fp2, 0) == 0, "get on empty -> 0");
+    return 0;
+}
 
-    # --- env: needs stdlib io getenv. PURITY + override are deterministic;
-    #     positive paths guard on a var the harness reliably inherits (HOME). ---
+# --- env: needs stdlib io getenv. PURITY + override are deterministic;
+#     positive paths guard on a var the harness reliably inherits (HOME). ---
 
-    # PURITY is the load-bearing invariant — assert it UNCONDITIONALLY (no env
-    # value needed: the flag must stay at its registered default after parse_argv).
+# PURITY is the load-bearing invariant — assert it UNCONDITIONALLY (no env
+# value needed: the flag must stay at its registered default after parse_argv).
+# env PURITY: cmdit_parse_argv ignores env (env applies only at finalize) (with the 1 group after
+# it, which share its fixtures)
+fn g025_env_purity_cmdit_parse(): i64 {
     test_group("env PURITY: cmdit_parse_argv ignores env (env applies only at finalize)");
     var hv = cmdit_new("t");
     var fv = cmdit_str(hv, 0, "home", 0, ""); cmdit_env(hv, fv, "HOME");
@@ -419,7 +514,11 @@ fn main() {
         assert(cstreq(cmdit_get_str(hv, fv), getenv("HOME")) == 1, "finalize filled value from $HOME");
         assert(cmdit_seen(hv, fv) == 1, "seen after env fallback");
     }
+    return 0;
+}
 
+# env: CLI value wins over env var
+fn g026_env_cli_value_wins(): i64 {
     test_group("env: CLI value wins over env var");
     var hv2 = cmdit_new("t");
     var fv2 = cmdit_str(hv2, 0, "home", 0, ""); cmdit_env(hv2, fv2, "HOME");
@@ -427,7 +526,11 @@ fn main() {
     assert(cmdit_parse_argv(hv2, 3, avv2) == CMDIT_OK, "parse OK");
     assert(cmdit_finalize(hv2) == CMDIT_OK, "finalize OK");
     assert(cstreq(cmdit_get_str(hv2, fv2), "/cli") == 1, "CLI value kept, env not consulted");
+    return 0;
+}
 
+# env: unset var -> default preserved
+fn g027_env_unset_var_default(): i64 {
     test_group("env: unset var -> default preserved");
     var hv3 = cmdit_new("t");
     var fv3 = cmdit_str(hv3, 0, "cfg", "DEF", ""); cmdit_env(hv3, fv3, "CMDIT_UNSET_VAR_XYZ_2026");
@@ -436,7 +539,11 @@ fn main() {
     assert(cmdit_finalize(hv3) == CMDIT_OK, "finalize OK");
     assert(cstreq(cmdit_get_str(hv3, fv3), "DEF") == 1, "unset env -> default DEF");
     assert(cmdit_seen(hv3, fv3) == 0, "not seen (env unset)");
+    return 0;
+}
 
+# env: bool presence + required-satisfied-by-env
+fn g028_env_bool_presence_required(): i64 {
     test_group("env: bool presence + required-satisfied-by-env");
     if (getenv("HOME") != 0) {
         var hv4 = cmdit_new("t");
@@ -451,7 +558,11 @@ fn main() {
         assert(cmdit_parse_argv(hv5, 1, avv5) == CMDIT_OK, "parse OK");
         assert(cmdit_finalize(hv5) == CMDIT_OK, "env satisfies required -> finalize OK");
     }
+    return 0;
+}
 
+# env: non-fatal bad value -> default, not error
+fn g029_env_non_fatal_bad(): i64 {
     test_group("env: non-fatal bad value -> default, not error");
     if (getenv("HOME") != 0) {
         var hv6 = cmdit_new("t");
@@ -462,9 +573,13 @@ fn main() {
         assert(cmdit_get_int(hv6, fv6) == 7, "default 7 preserved (env ignored)");
         assert(cmdit_seen(hv6, fv6) == 0, "not seen (env value rejected)");
     }
+    return 0;
+}
 
-    # A non-fatal env failure must leave the flag un-SEEN, so a required flag it
-    # was meant to satisfy still errors (env range/int failure + required precedence).
+# A non-fatal env failure must leave the flag un-SEEN, so a required flag it
+# was meant to satisfy still errors (env range/int failure + required precedence).
+# env: non-fatal failure leaves required unsatisfied
+fn g030_env_non_fatal_failure(): i64 {
     test_group("env: non-fatal failure leaves required unsatisfied");
     if (getenv("HOME") != 0) {
         var hrq = cmdit_new("t");
@@ -476,13 +591,17 @@ fn main() {
         assert(cmdit_error(hrq) == CMDIT_ERR_REQUIRED_MISSING, "error = REQUIRED_MISSING");
         assert(cmdit_get_int(hrq, frq) == 5, "default 5 preserved");
     }
+    return 0;
+}
 
-    # NOTE: the set-but-empty env path (getenv returns ptr to "" -> ignored for
-    # int/str/enum, _cmdit_apply_env's `load8(val) != 0` guard) is an accepted
-    # coverage gap: stdlib getenv reads /proc/self/environ (fixed at exec), so a
-    # .tcyr cannot set an empty-valued var internally. The guard is provably
-    # correct and symmetric with the tested unset path above.
+# NOTE: the set-but-empty env path (getenv returns ptr to "" -> ignored for
+# int/str/enum, _cmdit_apply_env's `load8(val) != 0` guard) is an accepted
+# coverage gap: stdlib getenv reads /proc/self/environ (fixed at exec), so a
+# .tcyr cannot set an empty-valued var internally. The guard is provably
+# correct and symmetric with the tested unset path above.
 
+# range: degenerate min==max accepts only that value
+fn g031_range_degenerate_min_max(): i64 {
     test_group("range: degenerate min==max accepts only that value");
     var hrd = cmdit_new("t");
     var frd = cmdit_int(hrd, 0, "sz", 0, ""); cmdit_range(hrd, frd, 64, 64);
@@ -494,14 +613,22 @@ fn main() {
     var avrd2 = alloc(3 * 8); store64(avrd2, "t"); store64(avrd2 + 8, "--sz"); store64(avrd2 + 16, "63");
     assert(cmdit_parse_argv(hrd2, 3, avrd2) == CMDIT_RESULT_ERR, "63 rejected (min==max)");
     assert(cmdit_error(hrd2) == CMDIT_ERR_OUT_OF_RANGE, "error = OUT_OF_RANGE");
+    return 0;
+}
 
+# enum: get_enum on a non-enum flag -> -1
+fn g032_enum_get_enum_non(): i64 {
     test_group("enum: get_enum on a non-enum flag -> -1");
     var hne = cmdit_new("t");
     var fne = cmdit_str(hne, 0, "name", 0, "");
     var avne = alloc(3 * 8); store64(avne, "t"); store64(avne + 8, "--name"); store64(avne + 16, "bob");
     assert(cmdit_parse_argv(hne, 3, avne) == CMDIT_OK, "parse OK");
     assert(cmdit_get_enum(hne, fne) == 0 - 1, "non-enum flag -> get_enum -1");
+    return 0;
+}
 
+# getters: negative / out-of-range idx -> safe sentinel (no OOB read)
+fn g033_getters_negative_out_range(): i64 {
     test_group("getters: negative / out-of-range idx -> safe sentinel (no OOB read)");
     var hg = cmdit_new("t");
     var fg = cmdit_int(hg, 99, "count", 7, "");
@@ -514,7 +641,11 @@ fn main() {
     assert(cmdit_seen(hg, 0 - 1) == 0, "seen(-1) -> 0");
     assert(cmdit_get_int(hg, 999) == 0, "get_int(past count) -> 0");
     assert(cmdit_seen(hg, 999) == 0, "seen(past count) -> 0");
+    return 0;
+}
 
+# C3: metavar + shown defaults (cosmetic; parsing unaffected)
+fn g034_c3_metavar_shown_defaults(): i64 {
     test_group("C3: metavar + shown defaults (cosmetic; parsing unaffected)");
     var hmv = cmdit_new("tool");
     var fout = cmdit_str(hmv, 111, "out", "out.txt", "output file");              # str flag w/ a default
@@ -525,7 +656,11 @@ fn main() {
     assert(cmdit_parse_argv(hmv, 3, amv) == CMDIT_OK, "parse with metavar'd flag OK");
     assert(cstreq(cmdit_get_str(hmv, fout), "real.txt") == 1, "metavar is cosmetic: parsing unaffected");
     assert(cmdit_help(hmv) == 0, "cmdit_help renders <FILE>/<N> metavars + (default: out.txt)");
+    return 0;
+}
 
+# repeat: the list grows past 64 (1.3.1; it used to drop silently)
+fn g035_repeat_list_grows_past(): i64 {
     test_group("repeat: the list grows past 64 (1.3.1; it used to drop silently)");
     # 300 occurrences cross three doublings (64 -> 128 -> 256 -> 512). Every value
     # is a distinct pointer, so order and identity are checked through each copy.
@@ -554,7 +689,11 @@ fn main() {
     assert(rsame == 1, "every occurrence kept, in order, through three regrowths");
     assert(cmdit_repeat_get(hpc, fpc, nrep) == 0, "past the count -> 0");
     assert(cmdit_get_str(hpc, fpc) == rvals + (nrep - 1) * 2, "last-wins view is the 300th");
+    return 0;
+}
 
+# err_flag: names the offending flag; -1 for unknown
+fn g036_err_flag_names_offending(): i64 {
     test_group("err_flag: names the offending flag; -1 for unknown");
     var hef = cmdit_new("t");
     var fef = cmdit_enum(hef, 0, "color", "auto", "auto|always|never", "");
@@ -565,20 +704,32 @@ fn main() {
     var avef2 = alloc(2 * 8); store64(avef2, "t"); store64(avef2 + 8, "--nope");
     assert(cmdit_parse_argv(hef2, 2, avef2) == CMDIT_RESULT_ERR, "unknown -> err");
     assert(cmdit_err_flag(hef2) == 0 - 1, "err_flag = -1 for UNKNOWN (no registered flag)");
+    return 0;
+}
 
+# end-to-end: cmdit_parse runs finalize (help short-circuits required)
+fn g037_end_end_cmdit_parse(): i64 {
     test_group("end-to-end: cmdit_parse runs finalize (help short-circuits required)");
     var hz = cmdit_new("t");
     var fz = cmdit_str(hz, 0, "handle", 0, ""); cmdit_required(hz, fz);
     var avz = alloc(2 * 8); store64(avz, "t"); store64(avz + 8, "--help");
     assert(cmdit_parse_argv(hz, 2, avz) == CMDIT_HELP, "--help short-circuits before required");
+    return 0;
+}
 
-    # --- 0.3.0 verb dispatch + positionals -----------------------------------
+# --- 0.3.0 verb dispatch + positionals -----------------------------------
 
+# basename: strips directory; passthrough when none
+fn g038_basename_strips_directory_passthrough(): i64 {
     test_group("basename: strips directory; passthrough when none");
     assert(cstreq(cmdit_basename("/usr/bin/kriya"), "kriya") == 1, "/usr/bin/kriya -> kriya");
     assert(cstreq(cmdit_basename("kriya"), "kriya") == 1, "bare name passthrough");
     assert(cstreq(cmdit_basename("./cp"), "cp") == 1, "./cp -> cp");
+    return 0;
+}
 
+# verb: match -> matched id + remainder slice
+fn g039_verb_match_matched_id(): i64 {
     test_group("verb: match -> matched id + remainder slice");
     var hv1 = cmdit_new("t");
     var v_add = cmdit_verb(hv1, "add", "add a thing");
@@ -588,15 +739,19 @@ fn main() {
     assert(cmdit_verb_matched(hv1) == v_add, "matched = add id");
     assert(cmdit_verb_argc(hv1) == 1, "remainder argc = 1");
     assert(cstreq(load64(cmdit_verb_argv(hv1)), "add") == 1, "remainder[0] = verb name");
+    return 0;
+}
 
-    # ══ 1.2.2: '--' forwarding + trailing-verbatim ══════════
-    #
-    # Both halves of "a verb cannot forward a command line". Before 1.2.2 the
-    # dispatcher swallowed the '--' terminator without copying it into the
-    # remainder, so the verb's own parse never saw one and the documented escape
-    # hatch failed IDENTICALLY to omitting it. Separately, a global flag inside
-    # the forwarded command was applied to the host tool.
+# ══ 1.2.2: '--' forwarding + trailing-verbatim ══════════
+#
+# Both halves of "a verb cannot forward a command line". Before 1.2.2 the
+# dispatcher swallowed the '--' terminator without copying it into the
+# remainder, so the verb's own parse never saw one and the documented escape
+# hatch failed IDENTICALLY to omitting it. Separately, a global flag inside
+# the forwarded command was applied to the host tool.
 
+# verb: '--' after the verb reaches the remainder
+fn g040_verb_after_verb_reaches(): i64 {
     test_group("verb: '--' after the verb reaches the remainder");
     var tr_h1 = cmdit_new("t");
     cmdit_verb(tr_h1, "exec", "");
@@ -606,7 +761,11 @@ fn main() {
     assert(cmdit_dispatch_argv(tr_h1, 6, tr_a1) == CMDIT_OK, "dispatch OK");
     assert(cmdit_verb_argc(tr_h1) == 5, "remainder keeps the '--' (was 4)");
     assert(cstreq(load64(cmdit_verb_argv(tr_h1) + 16), "--") == 1, "at index 2, after [exec][c1]");
+    return 0;
+}
 
+# verb: '--' BEFORE the verb is still consumed
+fn g041_verb_before_verb_still(): i64 {
     test_group("verb: '--' BEFORE the verb is still consumed");
     var tr_h2 = cmdit_new("t");
     cmdit_verb(tr_h2, "exec", "");
@@ -614,7 +773,11 @@ fn main() {
     store64(tr_a2, "t"); store64(tr_a2 + 8, "--"); store64(tr_a2 + 16, "exec"); store64(tr_a2 + 24, "c1");
     assert(cmdit_dispatch_argv(tr_h2, 4, tr_a2) == CMDIT_OK, "dispatch OK");
     assert(cstreq(load64(cmdit_verb_argv(tr_h2)), "exec") == 1, "remainder[0] is still the verb");
+    return 0;
+}
 
+# verb: trailing-verbatim keeps a global flag out of the payload
+fn g042_verb_trailing_verbatim_keeps(): i64 {
     test_group("verb: trailing-verbatim keeps a global flag out of the payload");
     var tr_h3 = cmdit_new("t");
     var tr_root = cmdit_str(tr_h3, 0, "root", "/default", "data root");
@@ -626,7 +789,11 @@ fn main() {
     assert(cmdit_dispatch_argv(tr_h3, 6, tr_a3) == CMDIT_OK, "dispatch OK");
     assert(cstreq(cmdit_get_str(tr_h3, tr_root), "/default") == 1, "--root NOT stolen by the host tool");
     assert(cmdit_verb_argc(tr_h3) == 5, "the whole payload reached the remainder");
+    return 0;
+}
 
+# verb: trailing-verbatim survives into the verb's own parse
+fn g043_verb_trailing_verbatim_survives(): i64 {
     test_group("verb: trailing-verbatim survives into the verb's own parse");
     var tr_h4 = cmdit_new("t");
     var tr_v4 = cmdit_verb(tr_h4, "exec", "");
@@ -640,7 +807,11 @@ fn main() {
     assert(cmdit_parse_verb(tr_vh4, tr_h4) == CMDIT_OK, "verb parse OK — '-l' is not an unknown flag");
     assert(cmdit_positional_count(tr_vh4) == 4, "c1 ls -l -a are all positionals");
     assert(cstreq(cmdit_positional(tr_vh4, 2), "-l") == 1, "the flag reached the payload verbatim");
+    return 0;
+}
 
+# verb: trailing-verbatim does not eat the verb's OWN flags
+fn g044_verb_trailing_verbatim_does(): i64 {
     test_group("verb: trailing-verbatim does not eat the verb's OWN flags");
     var tr_h5 = cmdit_new("t");
     var tr_v5 = cmdit_verb(tr_h5, "exec", "");
@@ -654,12 +825,20 @@ fn main() {
     assert(cmdit_parse_verb(tr_vh5, tr_h5) == CMDIT_OK, "verb parse OK");
     assert(cstreq(cmdit_get_str(tr_vh5, tr_wd5), "/app") == 1, "-w before the positional IS the verb's");
     assert(cmdit_positional_count(tr_vh5) == 2, "c1 and ls are the positionals");
+    return 0;
+}
 
+# verb: an unmarked verb is unchanged
+fn g045_verb_unmarked_verb_unchanged(): i64 {
     test_group("verb: an unmarked verb is unchanged");
     var tr_h6 = cmdit_new("t");
     cmdit_verb(tr_h6, "plain", "");
     assert(cmdit_verb_trailing_at(tr_h6, 0) == 0 - 1, "unmarked -> -1");
+    return 0;
+}
 
+# verb: alias resolves to canonical id
+fn g046_verb_alias_resolves_canonical(): i64 {
     test_group("verb: alias resolves to canonical id");
     var vb2 = cmdit_new("t");
     var v_inst = cmdit_verb(vb2, "install", "");
@@ -667,21 +846,33 @@ fn main() {
     var dv2 = alloc(2 * 8); store64(dv2, "t"); store64(dv2 + 8, "i");
     assert(cmdit_dispatch_argv(vb2, 2, dv2) == CMDIT_OK, "dispatch OK");
     assert(cmdit_verb_matched(vb2) == v_inst, "alias i -> install id");
+    return 0;
+}
 
+# verb: unknown -> UNKNOWN_VERB
+fn g047_verb_unknown_unknown_verb(): i64 {
     test_group("verb: unknown -> UNKNOWN_VERB");
     var vb3 = cmdit_new("t");
     cmdit_verb(vb3, "add", "");
     var dv3 = alloc(2 * 8); store64(dv3, "t"); store64(dv3 + 8, "bogus");
     assert(cmdit_dispatch_argv(vb3, 2, dv3) == CMDIT_RESULT_ERR, "unknown verb -> RESULT_ERR");
     assert(cmdit_error(vb3) == CMDIT_ERR_UNKNOWN_VERB, "error = UNKNOWN_VERB");
+    return 0;
+}
 
+# verb: no verb token -> matched -1
+fn g048_verb_no_verb_token(): i64 {
     test_group("verb: no verb token -> matched -1");
     var vb4 = cmdit_new("t");
     cmdit_bool(vb4, 0, "verbose", ""); cmdit_verb(vb4, "add", "");
     var dv4 = alloc(2 * 8); store64(dv4, "t"); store64(dv4 + 8, "--verbose");
     assert(cmdit_dispatch_argv(vb4, 2, dv4) == CMDIT_OK, "globals-only dispatch OK");
     assert(cmdit_verb_matched(vb4) == 0 - 1, "no verb -> matched -1");
+    return 0;
+}
 
+# verb: global flag BEFORE verb is applied; verb still matched
+fn g049_verb_global_flag_before(): i64 {
     test_group("verb: global flag BEFORE verb is applied; verb still matched");
     var vb5 = cmdit_new("t");
     var g5 = cmdit_bool(vb5, 0, "verbose", ""); var a5 = cmdit_verb(vb5, "add", "");
@@ -690,7 +881,11 @@ fn main() {
     assert(cmdit_get_bool(vb5, g5) == 1, "--verbose applied (before verb)");
     assert(cmdit_verb_matched(vb5) == a5, "verb = add");
     assert(cmdit_verb_argc(vb5) == 1, "remainder is just [add] (global plucked)");
+    return 0;
+}
 
+# verb: global flag AFTER verb is applied (the double-scan fix)
+fn g050_verb_global_flag_after(): i64 {
     test_group("verb: global flag AFTER verb is applied (the double-scan fix)");
     var vb6 = cmdit_new("t");
     var g6 = cmdit_bool(vb6, 0, "verbose", ""); cmdit_verb(vb6, "add", "");
@@ -698,7 +893,11 @@ fn main() {
     assert(cmdit_dispatch_argv(vb6, 3, dv6) == CMDIT_OK, "dispatch OK");
     assert(cmdit_get_bool(vb6, g6) == 1, "--verbose applied (after verb)");
     assert(cmdit_verb_argc(vb6) == 1, "remainder = [add] (after-verb global plucked)");
+    return 0;
+}
 
+# verb: global str BEFORE verb consumes its value
+fn g051_verb_global_str_before(): i64 {
     test_group("verb: global str BEFORE verb consumes its value");
     var hv7 = cmdit_new("t");
     var g7 = cmdit_str(hv7, 0, "config", 0, ""); var a7 = cmdit_verb(hv7, "add", "");
@@ -708,7 +907,11 @@ fn main() {
     assert(cmdit_dispatch_argv(hv7, 4, dv7) == CMDIT_OK, "dispatch OK");
     assert(cstreq(cmdit_get_str(hv7, g7), "c.toml") == 1, "--config consumed its value");
     assert(cmdit_verb_matched(hv7) == a7, "verb = add");
+    return 0;
+}
 
+# verb: an unknown flag AFTER the verb goes to the remainder
+fn g052_verb_unknown_flag_after(): i64 {
     test_group("verb: unknown flag AFTER verb is deferred to the remainder");   #skip-lint
     var hv8 = cmdit_new("t");
     var g8 = cmdit_bool(hv8, 0, "verbose", ""); cmdit_verb(hv8, "add", "");
@@ -719,7 +922,11 @@ fn main() {
     assert(cmdit_get_bool(hv8, g8) == 0, "global --verbose untouched");
     assert(cmdit_verb_argc(hv8) == 3, "remainder = [add, --force, x]");
     assert(cstreq(load64(cmdit_verb_argv(hv8) + 8), "--force") == 1, "remainder[1] = --force");
+    return 0;
+}
 
+# verb: help BEFORE the verb -> CMDIT_HELP; AFTER the verb, it is the verb's
+fn g053_verb_help_before_verb(): i64 {
     test_group("verb: help BEFORE verb -> CMDIT_HELP; AFTER verb -> deferred");   #skip-lint
     var hv9 = cmdit_new("t");
     cmdit_verb(hv9, "add", "");
@@ -730,14 +937,22 @@ fn main() {
     var dv9b = alloc(3 * 8); store64(dv9b, "t"); store64(dv9b + 8, "add"); store64(dv9b + 16, "--help");
     assert(cmdit_dispatch_argv(hv9b, 3, dv9b) == CMDIT_OK, "--help after verb -> OK (deferred)");   #skip-lint
     assert(cmdit_verb_argc(hv9b) == 2, "remainder = [add, --help] for verb scope");
+    return 0;
+}
 
+# verb: '--' before verb still lets the next token be the verb
+fn g054_verb_before_verb_still(): i64 {
     test_group("verb: '--' before verb still lets the next token be the verb");
     var hv10 = cmdit_new("t");
     var a10 = cmdit_verb(hv10, "add", "");
     var dv10 = alloc(3 * 8); store64(dv10, "t"); store64(dv10 + 8, "--"); store64(dv10 + 16, "add");
     assert(cmdit_dispatch_argv(hv10, 3, dv10) == CMDIT_OK, "dispatch OK");
     assert(cmdit_verb_matched(hv10) == a10, "verb = add after --");
+    return 0;
+}
 
+# verb: re-parse the remainder in a per-verb handle
+fn g055_verb_re_parse_remainder(): i64 {
     test_group("verb: re-parse the remainder in a per-verb handle");
     var hp1 = cmdit_new("tool");
     cmdit_verb(hp1, "add", "");
@@ -752,7 +967,11 @@ fn main() {
     assert(cstreq(cmdit_get_str(vh1, vn1), "bob") == 1, "verb flag --name = bob");
     assert(cmdit_positional_count(vh1) == 1, "verb positional captured");
     assert(cstreq(cmdit_positional(vh1, 0), "file.txt") == 1, "verb positional = file.txt");
+    return 0;
+}
 
+# verb: nested sub-verb via re-entry on the remainder
+fn g056_verb_nested_sub_verb(): i64 {
     test_group("verb: nested sub-verb via re-entry on the remainder");
     var hn = cmdit_new("tool");
     cmdit_verb(hn, "remote", "");
@@ -766,7 +985,11 @@ fn main() {
     assert(cmdit_verb_matched(sh) == sv_add, "sub verb = add");
     assert(cmdit_verb_argc(sh) == 2, "sub remainder = [add, origin]");
     assert(cstreq(load64(cmdit_verb_argv(sh) + 8), "origin") == 1, "sub remainder[1] = origin");
+    return 0;
+}
 
+# require_positionals: count gate
+fn g057_require_positionals_count_gate(): i64 {
     test_group("require_positionals: count gate");
     var hpp = cmdit_new("t");
     var dpp = alloc(3 * 8); store64(dpp, "t"); store64(dpp + 8, "a"); store64(dpp + 16, "b");
@@ -774,7 +997,11 @@ fn main() {
     assert(cmdit_require_positionals(hpp, 2) == CMDIT_OK, "min 2 satisfied");
     assert(cmdit_require_positionals(hpp, 3) == CMDIT_RESULT_ERR, "min 3 not met -> err");
     assert(cmdit_error(hpp) == CMDIT_ERR_MISSING_POSITIONAL, "error = MISSING_POSITIONAL");
+    return 0;
+}
 
+# C1: require_positionals_max / _exact upper-bound + exact gates
+fn g058_c1_require_positionals_max(): i64 {
     test_group("C1: require_positionals_max / _exact upper-bound + exact gates");
     var hpm = cmdit_new("t");
     var dpm = alloc(3 * 8); store64(dpm, "t"); store64(dpm + 8, "a"); store64(dpm + 16, "b");
@@ -789,7 +1016,11 @@ fn main() {
     assert(cmdit_error(hpm) == CMDIT_ERR_MISSING_POSITIONAL, "too few -> MISSING_POSITIONAL");
     assert(cmdit_require_positionals_exact(hpm, 1) == CMDIT_RESULT_ERR, "exact 1 (too many) -> err");
     assert(cmdit_error(hpm) == CMDIT_ERR_TOO_MANY_POSITIONAL, "too many -> TOO_MANY_POSITIONAL");
+    return 0;
+}
 
+# verb: global required satisfied at finalize after dispatch
+fn g059_verb_global_required_satisfied(): i64 {
     test_group("verb: global required satisfied at finalize after dispatch");
     var hgr = cmdit_new("t");
     var gr = cmdit_str(hgr, 0, "config", 0, ""); cmdit_required(hgr, gr); cmdit_verb(hgr, "add", "");
@@ -797,9 +1028,13 @@ fn main() {
     assert(cmdit_dispatch_argv(hgr, 2, dgr) == CMDIT_OK, "dispatch OK");
     assert(cmdit_finalize(hgr) == CMDIT_RESULT_ERR, "missing global required -> finalize err");
     assert(cmdit_error(hgr) == CMDIT_ERR_REQUIRED_MISSING, "error = REQUIRED_MISSING");
+    return 0;
+}
 
-    # --- audit-identified coverage gaps --------------------------------------
+# --- audit-identified coverage gaps --------------------------------------
 
+# parse: negative int value (the sign branch of _cmdit_parse_int)
+fn g060_parse_negative_int_value(): i64 {
     test_group("parse: negative int value (the sign branch of _cmdit_parse_int)");
     var hni = cmdit_new("t");
     var cni = cmdit_int(hni, 99, "count", 0, "");
@@ -811,13 +1046,21 @@ fn main() {
     var avni2 = alloc(3 * 8); store64(avni2, "t"); store64(avni2 + 8, "--count"); store64(avni2 + 16, "-42");
     assert(cmdit_parse_argv(hni2, 3, avni2) == CMDIT_OK, "--count -42 parse OK");
     assert(cmdit_get_int(hni2, cni2) == 0 - 42, "negative int space form -> -42");
+    return 0;
+}
 
+# error: unknown SHORT flag -z -> UNKNOWN
+fn g061_error_unknown_short_flag(): i64 {
     test_group("error: unknown SHORT flag -z -> UNKNOWN");
     var huz = cmdit_new("t");
     var avuz = alloc(2 * 8); store64(avuz, "t"); store64(avuz + 8, "-z");
     assert(cmdit_parse_argv(huz, 2, avuz) == CMDIT_RESULT_ERR, "unknown short -> RESULT_ERR");
     assert(cmdit_error(huz) == CMDIT_ERR_UNKNOWN, "error = UNKNOWN");
+    return 0;
+}
 
+# error: short value flag missing its value -> MISSING_VALUE + err_flag
+fn g062_error_short_value_flag(): i64 {
     test_group("error: short value flag missing its value -> MISSING_VALUE + err_flag");
     var hsm = cmdit_new("t");
     var csm = cmdit_int(hsm, 99, "count", 1, "");
@@ -825,21 +1068,33 @@ fn main() {
     assert(cmdit_parse_argv(hsm, 2, avsm) == CMDIT_RESULT_ERR, "short flag at end, no value -> err");
     assert(cmdit_error(hsm) == CMDIT_ERR_MISSING_VALUE, "error = MISSING_VALUE");
     assert(cmdit_err_flag(hsm) == csm, "err_flag names -c");
+    return 0;
+}
 
+# enum: a prefix of a valid choice is rejected (length-checked compare)
+fn g063_enum_prefix_valid_choice(): i64 {
     test_group("enum: a prefix of a valid choice is rejected (length-checked compare)");
     var hpx = cmdit_new("t");
     var fpx = cmdit_enum(hpx, 0, "color", "auto", "auto|always|never", "");
     var avpx = alloc(2 * 8); store64(avpx, "t"); store64(avpx + 8, "--color=neve");   # prefix of "never"
     assert(cmdit_parse_argv(hpx, 2, avpx) == CMDIT_RESULT_ERR, "prefix 'neve' rejected");
     assert(cmdit_error(hpx) == CMDIT_ERR_BAD_ENUM, "error = BAD_ENUM (not a partial match)");
+    return 0;
+}
 
+# verb: an unknown flag BEFORE the verb is a hard error, not passed on
+fn g064_verb_unknown_flag_before(): i64 {
     test_group("verb: unknown flag BEFORE the verb is a hard error (not deferred)");   #skip-lint
     var hub = cmdit_new("t");
     cmdit_bool(hub, 0, "verbose", ""); cmdit_verb(hub, "add", "");
     var dub = alloc(3 * 8); store64(dub, "t"); store64(dub + 8, "--bogus"); store64(dub + 16, "add");
     assert(cmdit_dispatch_argv(hub, 3, dub) == CMDIT_RESULT_ERR, "pre-verb unknown -> RESULT_ERR");
     assert(cmdit_error(hub) == CMDIT_ERR_UNKNOWN, "error = UNKNOWN (not UNKNOWN_VERB, not deferred)");   #skip-lint
+    return 0;
+}
 
+# verb: global value flag missing its value during dispatch -> MISSING_VALUE
+fn g065_verb_global_value_flag(): i64 {
     test_group("verb: global value flag missing its value during dispatch -> MISSING_VALUE");
     var hgm = cmdit_new("t");
     var gcfg = cmdit_str(hgm, 0, "config", 0, ""); cmdit_verb(hgm, "add", "");
@@ -847,17 +1102,29 @@ fn main() {
     assert(cmdit_dispatch_argv(hgm, 3, dgm) == CMDIT_RESULT_ERR, "global flag missing value at end -> err");
     assert(cmdit_error(hgm) == CMDIT_ERR_MISSING_VALUE, "error = MISSING_VALUE (dispatch copy)");
     assert(cmdit_err_flag(hgm) == gcfg, "err_flag names --config");
+    return 0;
+}
 
+# verb: cmdit_verb_alias on a bad verb id -> -1
+fn g066_verb_cmdit_verb_alias(): i64 {
     test_group("verb: cmdit_verb_alias on a bad verb id -> -1");
     var hba = cmdit_new("t");
     assert(cmdit_verb_alias(hba, 0 - 1, "x") == 0 - 1, "alias of -1 -> -1");
+    return 0;
+}
 
+# parse: cmdit_new(0) adopts argv[0] as the prog name
+fn g067_parse_cmdit_new_0(): i64 {
     test_group("parse: cmdit_new(0) adopts argv[0] as the prog name");
     var hn0 = cmdit_new(0);
     var an0 = alloc(2 * 8); store64(an0, "myprog"); store64(an0 + 8, "x");
     assert(cmdit_parse_argv(hn0, 2, an0) == CMDIT_OK, "parse OK with null prog");
     assert(cstreq(load64(hn0 + 48), "myprog") == 1, "prog_name adopted from argv[0]");
+    return 0;
+}
 
+# limit: registering past CMDIT_FLAGS_MAX returns -1 (no overrun)
+fn g068_limit_registering_past_cmdit(): i64 {
     test_group("limit: registering past CMDIT_FLAGS_MAX returns -1 (no overrun)");
     var hcap = cmdit_new("t");                          # already used 2 slots (help/version)
     var k = 0;
@@ -865,7 +1132,11 @@ fn main() {
     while (k < 62) { lastok = cmdit_bool(hcap, 0, 0, ""); k = k + 1; }
     assert(lastok == 63, "64th registration (idx 63) succeeds");
     assert(cmdit_bool(hcap, 0, 0, "") == 0 - 1, "65th registration -> -1 (cap enforced)");
+    return 0;
+}
 
+# limit: registering past CMDIT_VERB_MAX returns -1
+fn g069_limit_registering_past_cmdit(): i64 {
     test_group("limit: registering past CMDIT_VERB_MAX returns -1");
     var hvc = cmdit_new("t");
     var vk = 0;
@@ -873,13 +1144,17 @@ fn main() {
     while (vk < 128) { vlast = cmdit_verb(hvc, "v", ""); vk = vk + 1; }
     assert(vlast == 127, "128th verb (id 127) succeeds");
     assert(cmdit_verb(hvc, "v", "") == 0 - 1, "129th verb -> -1 (cap enforced)");
+    return 0;
+}
 
-    # --- output renderers ----------------------------------------------------
-    # These assert the documented return code AND, more importantly, that the
-    # pointer-heavy render paths (raw entry/verb-row offsets, the sbuf[2] short
-    # buffer, the choice-set + Commands tails) execute without OOB. They emit to
-    # stdout/stderr by design — that output noise is expected during the run.
+# --- output renderers ----------------------------------------------------
+# These assert the documented return code AND, more importantly, that the
+# pointer-heavy render paths (raw entry/verb-row offsets, the sbuf[2] short
+# buffer, the choice-set + Commands tails) execute without OOB. They emit to
+# stdout/stderr by design — that output noise is expected during the run.
 
+# render: cmdit_help renders every flag kind + the verb tail
+fn g070_render_cmdit_help_renders(): i64 {
     test_group("render: cmdit_help renders every flag kind + the verb tail");
     var rh = cmdit_new("tool");
     cmdit_bool(rh, 118, "verbose", "be verbose");                              # -v / --verbose
@@ -893,20 +1168,32 @@ fn main() {
     cmdit_verb_alias(rh, rhrm, "rm");
     assert(cmdit_help(rh) == 0, "cmdit_help: short+long/<enum>/<int>/<str>/.../(required) + Commands");
     assert(cmdit_help_flags(rh) == 0, "cmdit_help_flags: just the flag rows (no Usage/Options/Commands wrapper)");
+    return 0;
+}
 
+# render: cmdit_verbs_help lists real verbs, skips alias rows
+fn g071_render_cmdit_verbs_help(): i64 {
     test_group("render: cmdit_verbs_help lists real verbs, skips alias rows");
     var rvh = cmdit_new("tool");
     cmdit_verb(rvh, "add", "add a thing");
     var rvrm = cmdit_verb(rvh, "remove", "remove a thing");
     cmdit_verb_alias(rvh, rvrm, "rm");
     assert(cmdit_verbs_help(rvh) == 0, "cmdit_verbs_help renders (alias 'rm' skipped)");
+    return 0;
+}
 
+# render: cmdit_version line + null prog/version branches
+fn g072_render_cmdit_version_line(): i64 {
     test_group("render: cmdit_version line + null prog/version branches");
     var rver = cmdit_new("tool");
     assert(cmdit_version(rver, "tool 1.0") == CMDIT_EXIT_OK, "cmdit_version -> EXIT_OK");
     var rver0 = cmdit_new(0);                                                  # prog_name = 0
     assert(cmdit_version(rver0, 0) == CMDIT_EXIT_OK, "cmdit_version(null prog, null ver) -> EXIT_OK");
+    return 0;
+}
 
+# render: cmdit_print_error -> EXIT_USAGE for every error code
+fn g073_render_cmdit_print_error(): i64 {
     test_group("render: cmdit_print_error -> EXIT_USAGE for every error code");
     var pe1 = cmdit_new("prog");                                              # UNKNOWN (generic, no flag)
     var pav1 = alloc(2 * 8); store64(pav1, "prog"); store64(pav1 + 8, "--nope");
@@ -954,8 +1241,12 @@ fn main() {
     # force a bogus last_error -> the "argument error" fallback arm
     store64(pe10 + 56, 99);
     assert(cmdit_print_error(pe10) == CMDIT_EXIT_USAGE, "unrecognized code -> argument error -> EXIT_USAGE");
+    return 0;
+}
 
-    # ══ 1.2.0: verb introspection + completions ══════════
+# ══ 1.2.0: verb introspection + completions ══════════
+# verb_introspection
+fn g074_verb_introspection(): i64 {
     test_group("verb_introspection");
     var vi = cmdit_new("demo");
     assert(cmdit_verb_count(vi) == 0, "no verbs registered -> count 0");
@@ -980,7 +1271,11 @@ fn main() {
     assert(cmdit_verb_is_alias(vi, 99) == 0, "is_alias out of range -> 0");
     assert(cmdit_verb_canonical_at(vi, 99) == 0 - 1, "canonical_at out of range -> -1");
     assert(cmdit_verb_count(0) == 0, "null handle -> 0");
+    return 0;
+}
 
+# completions
+fn g075_completions(): i64 {
     test_group("completions");
     # Only the shell selection and the failure contract are asserted here — the
     # script bodies go to stdout, which this harness does not capture. The
@@ -990,10 +1285,14 @@ fn main() {
     assert(cmdit_completions(ch, "elvish") == 0 - 1, "unknown shell -> -1");
     assert(cmdit_completions(ch, 0) == 0 - 1, "null shell -> -1");
     assert(cmdit_completions(0, "bash") == 0 - 1, "null handle -> -1");
+    return 0;
+}
 
-    # ══ 1.2.4 audit fixes ══════════════════════
-    # Every assertion below fails against 1.2.3. See CHANGELOG [1.2.4].
+# ══ 1.2.4 audit fixes ══════════════════════
+# Every assertion below fails against 1.2.3. See CHANGELOG [1.2.4].
 
+# 1.2.4 security: shell command-word alphabet
+fn g076_1_2_4_security(): i64 {
     test_group("1.2.4 security: shell command-word alphabet");
     # Exhaustive over every byte value, so the whitelist cannot be widened by
     # accident. A generated completion script is SOURCED by the user's shell,
@@ -1027,7 +1326,11 @@ fn main() {
     assert(_cmdit_name_is_safe("tool\ntouch /tmp/x") == 0, "injected prog name is not safe");
     assert(_cmdit_name_is_safe("cmdit-smoke") == 1, "an ordinary hyphenated name stays safe");
     assert(_cmdit_name_is_safe("foo.sh") == 1, "a dotted name stays safe");
+    return 0;
+}
 
+# 1.2.4 memory safety: modifier idx guards
+fn g077_1_2_4_memory(): i64 {
     test_group("1.2.4 memory safety: modifier idx guards");
     # The 1.0.0 audit guarded the GETTERS. The modifiers kept only `idx < 0`,
     # so an out-of-range idx was an out-of-bounds WRITE: cmdit_required(h, 64)
@@ -1048,7 +1351,11 @@ fn main() {
     assert(cmdit_env(gh, 999, "HOME") == 0 - 1, "cmdit_env out of range -> -1");
     assert(cmdit_metavar(gh, 999, "F") == 0 - 1, "cmdit_metavar out of range -> -1");
     assert(cmdit_required(gh, 0 - 1) == 0 - 1, "cmdit_required(-1) still -1 (ignored registration)");
+    return 0;
+}
 
+# 1.2.4 memory safety: repeat accessor idx guards
+fn g078_1_2_4_memory(): i64 {
     test_group("1.2.4 memory safety: repeat accessor idx guards");
     # cmdit_repeat_get computed the entry pointer unchecked and then FOLLOWED
     # the list pointer read from it — not just an out-of-bounds read, a
@@ -1066,7 +1373,11 @@ fn main() {
     # A non-repeat flag has a 0 list pointer; asking for element 0 must not follow it.
     var rB = cmdit_bool(r124h, 0, "plain", "");
     assert(cmdit_repeat_get(r124h, rB, 0) == 0, "repeat_get on a non-repeat flag -> 0");
+    return 0;
+}
 
+# 1.2.4 null-handle tolerance
+fn g079_1_2_4_null(): i64 {
     test_group("1.2.4 null-handle tolerance");
     assert(cmdit_get_bool(0, 0) == 0, "get_bool(0) -> 0");
     assert(cmdit_get_int(0, 0) == 0, "get_int(0) -> 0");
@@ -1082,7 +1393,11 @@ fn main() {
     assert(cmdit_help_short(0, 120) == 0, "help_short(0) is a no-op, not a null write");
     assert(cmdit_version_short(0, 120) == 0, "version_short(0) is a no-op, not a null write");
     assert(cmdit_verb_trailing_after(0, 0, 1) == 0 - 1, "trailing_after(0) -> -1");
+    return 0;
+}
 
+# 1.2.4 correctness: err_entry does not leak across parses
+fn g080_1_2_4_correctness(): i64 {
     test_group("1.2.4 correctness: err_entry does not leak across parses");
     # cmdit_err_flag documents -1 for errors that name no registered flag
     # (UNKNOWN / BUNDLED). It held only on a virgin handle: err_entry was never
@@ -1111,7 +1426,11 @@ fn main() {
     assert(cmdit_parse_argv(eh, 3, eav4) == CMDIT_OK, "clean re-parse ok");
     assert(cmdit_error(eh) == CMDIT_ERR_NONE, "error reset by a clean parse");
     assert(cmdit_err_flag(eh) == 0 - 1, "err_flag reset by a clean parse");
+    return 0;
+}
 
+# 1.2.4 input validation: trailing_after / negative argc
+fn g081_1_2_4_input(): i64 {
     test_group("1.2.4 input validation: trailing_after / negative argc");
     var th = cmdit_new("t");
     var tv = cmdit_verb(th, "exec", "run in a container");
@@ -1130,7 +1449,11 @@ fn main() {
     store64(dav + 0*8, "t"); store64(dav + 1*8, "go");
     assert(cmdit_dispatch_argv(dh, 0 - 1, dav) == CMDIT_OK, "negative argc is clamped, not a null write");
     assert(cmdit_verb_matched(dh) == 0 - 1, "no verb matched from an empty argv");
+    return 0;
+}
 
+# 1.3.0 argv materialization: one walk, same pointers
+fn g082_1_3_0_argv(): i64 {
     test_group("1.3.0 argv materialization: one walk, same pointers");
     # The Linux cmdline layout: arguments end to end, each NUL-terminated, an
     # empty argument a bare NUL. "a\0\0bc\0-x\0" holds four of them.
@@ -1164,7 +1487,12 @@ fn main() {
     assert(lsame == 1, "every slot is pointer-identical to argv(i)");
     assert(load64(la + ln * 8) == 0, "materialized argv is NULL-terminated");
     assert(cmdit_argv(lh) == ln, "second call returns the cached count");
+    return 0;
+}
 
+# 1.3.1 positionals grow past 128 (it used to drop the rest silently) (with the 1 group after it,
+# which share its fixtures)
+fn g083_1_3_1_positionals(): i64 {
     test_group("1.3.1 positionals grow past 128 (it used to drop the rest silently)");
     # `tool *.txt` over 1000 files: 1000 distinct positional pointers with a flag in
     # the middle, crossing three doublings (128 -> 256 -> 512 -> 1024).
@@ -1236,7 +1564,11 @@ fn main() {
     assert(cmdit_error(nrh) == CMDIT_ERR_NOMEM, "repeat growth failure -> NOMEM");
     assert(cmdit_err_flag(nrh) == rf, "repeat NOMEM names its flag");
     assert(cmdit_err_value(nrh) == 0, "repeat NOMEM rejected no value (1.3.3)");
+    return 0;
+}
 
+# 1.3.1 a bool given =value is rejected (`--loud=0` used to turn it ON)
+fn g084_1_3_1_bool(): i64 {
     test_group("1.3.1 a bool given =value is rejected (`--loud=0` used to turn it ON)");
     var bh = cmdit_new("prog");
     var bl = cmdit_bool(bh, 108, "loud", "");
@@ -1287,7 +1619,11 @@ fn main() {
         assert(cmdit_finalize(be) == CMDIT_OK, "env-bool finalize OK (no value check on env)");
         assert(cmdit_get_bool(be, bel) == 1, "a set env var still turns the bool on");
     }
+    return 0;
+}
 
+# 1.2.4 security: emitters actually sanitise the program name
+fn g085_1_2_4_security(): i64 {
     test_group("1.2.4 security: emitters actually sanitise the program name");
     # The end-to-end case. prog_name here is what argv[0] would be on the
     # documented cmdit_new(0) path, chosen by whoever execs the tool. Against
@@ -1322,7 +1658,11 @@ fn main() {
     cn = capture_completions(gh2, "fish", cbuf, 8192);
     assert(cn > 0, "fish completion for an ordinary name captured");
     assert(contains(cbuf, "complete -c cmdit-smoke") == 1, "a hyphenated prog name is emitted verbatim");
+    return 0;
+}
 
+# 1.3.2 a 0 handle (cmdit_new's OOM result) is safe on every public entry point
+fn g086_1_3_2_0(): i64 {
     test_group("1.3.2 a 0 handle (cmdit_new's OOM result) is safe on every public entry point");
     # 1.2.4 claimed this and only the getters/modifiers honoured it. Each call below
     # dereferenced address 0 before 1.3.2. The handle is 0 only when alloc refused,
@@ -1363,7 +1703,11 @@ fn main() {
     var zbuf = alloc(256);
     capture_print_error(0, zbuf, 256);
     assert(cstreq(zbuf, "out of memory\n") == 1, "print_error(0) says `out of memory`");
+    return 0;
+}
 
+# 1.3.2 dispatch reports NOMEM when its remainder alloc is refused
+fn g087_1_3_2_dispatch(): i64 {
     test_group("1.3.2 dispatch reports NOMEM when its remainder alloc is refused");
     # Before 1.3.2 this path returned RESULT_ERR with cmdit_error still NONE.
     var dnh = cmdit_new("t");
@@ -1390,7 +1734,11 @@ fn main() {
     store64(pwh + 40, 2305843009213693953);
     assert(cmdit_parse_argv(pwh, 2, dnav) == CMDIT_RESULT_ERR, "positional growth at a wrapping size is refused");
     assert(cmdit_error(pwh) == CMDIT_ERR_NOMEM, "-> NOMEM, not a 16-byte array");
+    return 0;
+}
 
+# 1.3.2 zsh and fish completions apply the 1.2.1 name whitelist
+fn g088_1_3_2_zsh(): i64 {
     test_group("1.3.2 zsh and fish completions apply the 1.2.1 name whitelist");
     var wh = cmdit_new("tool");
     cmdit_verb(wh, "add", "add a thing");
@@ -1407,7 +1755,11 @@ fn main() {
     assert(contains(wbuf, "a:b") == 0, "zsh drops a name with a colon");
     capture_completions(wh, "bash", wbuf, 16384);
     assert(contains(wbuf, "touch") == 0, "bash still drops it (1.2.1)");
+    return 0;
+}
 
+# 1.3.2 verb aliases must name a registered verb
+fn g089_1_3_2_verb(): i64 {
     test_group("1.3.2 verb aliases must name a registered verb");
     var ah = cmdit_new("t");
     var av0 = cmdit_verb(ah, "remove", "");
@@ -1415,7 +1767,11 @@ fn main() {
     assert(cmdit_verb_alias(ah, 5, "zz") == 0 - 1, "alias of a missing verb -> -1");
     assert(cmdit_verb_alias(ah, 1, "r") == 0 - 1, "alias of an alias row -> -1");
     assert(cmdit_verb_count(ah) == 2, "rejected aliases add no rows");
+    return 0;
+}
 
+# 1.3.2 _cmdit_repeat_cap terminates past 2^62
+fn g090_1_3_2_cmdit(): i64 {
     test_group("1.3.2 _cmdit_repeat_cap terminates past 2^62");
     # A count above 2^62 used to double the cap into a negative, then 0, forever.
     var bigc = 4611686018427387905;
@@ -1430,7 +1786,11 @@ fn main() {
     store64(rcav + 16, "b");
     cmdit_parse_argv(rch, 3, rcav);
     assert(cstreq(cmdit_get_str(rch, rcf), "a") == 1, "a refused push leaves the last-wins view alone");
+    return 0;
+}
 
+# 1.3.2 a trailing-marked verb counts only positionals, not its own flags
+fn g091_1_3_2_trailing(): i64 {
     test_group("1.3.2 a trailing-marked verb counts only positionals, not its own flags");
     # `exec --tty --root /x c1 ls`: --tty is a verb flag, --root a global. Before
     # 1.3.2 --tty counted as exec's one positional, so --root fell into the payload.
@@ -1455,7 +1815,11 @@ fn main() {
     store64(tav1 + 16, "c1"); store64(tav1 + 24, "mycmd"); store64(tav1 + 32, "--root"); store64(tav1 + 40, "/y");
     assert(cmdit_dispatch_argv(th1b, 6, tav1) == CMDIT_OK, "dispatch OK (payload has --root)");
     assert(cstreq(cmdit_get_str(th1b, tg1b), "/default") == 1, "a global inside the payload is still not applied");
+    return 0;
+}
 
+# 1.3.2 `tool add --help` is not blocked by a required global
+fn g092_1_3_2_tool(): i64 {
     test_group("1.3.2 `tool add --help` is not blocked by a required global");
     var th2 = cmdit_new("t");
     var tr2 = cmdit_str(th2, 0, "handle", 0, "");
@@ -1473,7 +1837,11 @@ fn main() {
     store64(tav2 + 16, "x");
     assert(cmdit_dispatch_argv(th2b, 3, tav2) == CMDIT_OK, "an ordinary dispatch");
     assert(cmdit_finalize(th2b) == CMDIT_RESULT_ERR, "still demands --handle without --help");
+    return 0;
+}
 
+# 1.3.2 a `--` right at a trailing-verbatim threshold is consumed
+fn g093_1_3_2_right(): i64 {
     test_group("1.3.2 a `--` right at a trailing-verbatim threshold is consumed");
     # `exec c1 -- ls -l` (the 1.2.2 escape hatch) ran the command `--` once exec
     # was marked. A `--` at the threshold is now consumed, kubectl-style.
@@ -1496,7 +1864,11 @@ fn main() {
     var tc3b = cmdit_new("t exec");
     cmdit_parse_verb(tc3b, th3b);
     assert(cstreq(cmdit_positional(tc3b, 1), "--") == 1, "only the first -- is consumed");
+    return 0;
+}
 
+# 1.3.2 a bundled short before the verb is BUNDLED, as in the parse core
+fn g094_1_3_2_bundled(): i64 {
     test_group("1.3.2 a bundled short before the verb is BUNDLED, as in the parse core");
     var th4 = cmdit_new("t");
     cmdit_bool(th4, 118, "verbose", "");
@@ -1504,7 +1876,11 @@ fn main() {
     var tav4 = alloc(3 * 8); store64(tav4, "t"); store64(tav4 + 8, "-vx"); store64(tav4 + 16, "add");
     assert(cmdit_dispatch_argv(th4, 3, tav4) == CMDIT_RESULT_ERR, "-vx before the verb fails");
     assert(cmdit_error(th4) == CMDIT_ERR_BUNDLED, "-> BUNDLED, not UNKNOWN");
+    return 0;
+}
 
+# 1.3.2 trailing marks resolve through an alias row
+fn g095_1_3_2_trailing(): i64 {
     test_group("1.3.2 trailing marks resolve through an alias row");
     var th5 = cmdit_new("t");
     var tv5 = cmdit_verb(th5, "exec", "");
@@ -1513,7 +1889,11 @@ fn main() {
     assert(cmdit_verb_trailing_after(th5, 1, 1) == tv5, "marking the alias row marks the verb");
     assert(cmdit_verb_trailing_at(th5, tv5) == 1, "the canonical verb carries the mark");
     assert(cmdit_verb_trailing_at(th5, 1) == 1, "and reading it through the alias row agrees");
+    return 0;
+}
 
+# 1.3.2 the argv bridge fails closed when argv cannot be read whole
+fn g096_1_3_2_argv(): i64 {
     test_group("1.3.2 the argv bridge fails closed when argv cannot be read whole");
     # n <= 0: no argv[0], i.e. /proc/self/cmdline was unreadable. len >= 2 MiB: stdlib
     # args_init's single read filled its buffer and may have cut the tail. Both used
@@ -1533,7 +1913,11 @@ fn main() {
     var aebuf = alloc(256);
     capture_print_error(aeh, aebuf, 256);
     assert(cstreq(aebuf, "t: could not read the full command line\n") == 1, "ARGV renders its message");
+    return 0;
+}
 
+# 1.3.2 the public CMDIT_*_MAX vars no longer steer storage
+fn g097_1_3_2_public(): i64 {
     test_group("1.3.2 the public CMDIT_*_MAX vars no longer steer storage");
     # Each was read live: raising one after a table was allocated overflowed the heap,
     # and CMDIT_REPEAT_MAX = 0 hung the next repeat push.
@@ -1568,7 +1952,12 @@ fn main() {
     CMDIT_VERB_MAX = sv_verbs;
     CMDIT_REPEAT_MAX = sv_rep;
     CMDIT_ENTRY_SIZE = sv_ent;
+    return 0;
+}
 
+# 1.3.2 SECURITY: a program name starting with '-' is not read as options (with the 2 groups after
+# it, which share its fixtures)
+fn g098_1_3_2_security(): i64 {
     test_group("1.3.2 SECURITY: a program name starting with '-' is not read as options");
     # argv[0] = "-DCtrue" emitted `complete -F __DCtrue_complete -DCtrue`; sourcing it
     # bundled to `-D -C true` and replaced the user's default completion with a PATH
@@ -1606,7 +1995,12 @@ fn main() {
     assert(contains(dsbuf, "local valueflags='--root -r -j'") == 1, "bash skip set has --root -r -j");
     capture_completions(svh, "zsh", dsbuf, 16384);
     assert(contains(dsbuf, "valueflags=( --root -r -j )") == 1, "zsh skip set has --root -r -j");
+    return 0;
+}
 
+# 1.3.3 cmdit_err_token / cmdit_err_value name what the user typed (with the 1 group after it,
+# which share its fixtures)
+fn g099_1_3_3_cmdit(): i64 {
     test_group("1.3.3 cmdit_err_token / cmdit_err_value name what the user typed");
     # Seven tools echoed this by re-scanning argv. The token is an interior pointer
     # into argv (no copy); the value too, inside the token when attached.
@@ -1766,7 +2160,11 @@ fn main() {
     assert(contains(eb, "Usage: t? [options]") == 1, "and in help");
     capture_version(exh3, "1.0", eb, 512);
     assert(cstreq(eb, "t? 1.0\n") == 1, "and in --version");
+    return 0;
+}
 
+# 1.3.4 cmdit_stop_at_positional: POSIX stop at the first positional
+fn g100_1_3_4_cmdit(): i64 {
     test_group("1.3.4 cmdit_stop_at_positional: POSIX stop at the first positional");
     # shakti's grammar: its flags, then a command line that is entirely the child's.
     var sp = cmdit_new("shakti");
@@ -1838,7 +2236,11 @@ fn main() {
     var so3 = cmdit_new("t");
     cmdit_stop_at_positional(so3, 7);
     assert(cmdit_parse_argv(so3, 3, sdav) == CMDIT_OK, "any non-zero `on` enables the mode");
+    return 0;
+}
 
+# 1.3.4 stop-at-positional on a verb handle: globals only before the verb
+fn g101_1_3_4_stop(): i64 {
     test_group("1.3.4 stop-at-positional on a verb handle: globals only before the verb");
     var sv = cmdit_new("t");
     var svj = cmdit_int(sv, 106, "jobs", 1, "");
@@ -1865,7 +2267,11 @@ fn main() {
     store64(svav + 8, "add"); store64(svav + 16, "--help");
     assert(cmdit_dispatch_argv(svhh, 3, svav) == CMDIT_OK, "add --help under stop mode");
     assert(cmdit_finalize(svhh) == CMDIT_OK, "the required check is still skipped for help");
+    return 0;
+}
 
+# 1.3.5 the verb list's content is pinned (with the 2 groups after it, which share its fixtures)
+fn g102_1_3_5_verb(): i64 {
     test_group("1.3.5 the verb list's content is pinned");
     # The listing was only ever checked for its return code. (1.3.5 caught itself
     # reading a hidden flag one row too far, which no existing test noticed.)
@@ -1956,7 +2362,11 @@ fn main() {
     cmdit_verb_hidden(hvh5, cmdit_verb(hvh5, "debug", ""));
     capture_render(hvh5, 3, 2, vlb, 4096);
     assert(contains(vlb, "Commands:") == 0, "no empty Commands: block");
+    return 0;
+}
 
+# 1.3.6 cmdit_once: a second occurrence is CMDIT_ERR_REPEATED
+fn g103_1_3_6_cmdit(): i64 {
     test_group("1.3.6 cmdit_once: a second occurrence is CMDIT_ERR_REPEATED");
     var ob = alloc(512);
     var oh = cmdit_new("prog");
@@ -2021,7 +2431,11 @@ fn main() {
         assert(cmdit_get_str(oe2, oes2) != 0, "from HOME");
     }
     assert(cmdit_once(0, 0) == 0 - 1 && cmdit_once(oh, 99) == 0 - 1, "bad handle / idx -> -1");
+    return 0;
+}
 
+# 1.3.6 cmdit_enum_nocase: ASCII case-insensitive choices
+fn g104_1_3_6_cmdit(): i64 {
     test_group("1.3.6 cmdit_enum_nocase: ASCII case-insensitive choices");
     var nch = cmdit_new("prog");
     var ns = cmdit_enum(nch, 0, "severity", "Medium", "critical|high|medium|low", "");
@@ -2048,7 +2462,11 @@ fn main() {
     var nh5 = cmdit_new("prog");
     var nn5 = cmdit_int(nh5, 0, "count", 1, "");
     assert(cmdit_enum_nocase(nh5, nn5) == nn5, "a no-op on a non-enum flag");
+    return 0;
+}
 
+# 1.3.6 cmdit_long_alias: a second long name
+fn g105_1_3_6_cmdit(): i64 {
     test_group("1.3.6 cmdit_long_alias: a second long name");
     var lah = cmdit_new("ark");
     var lam = cmdit_bool(lah, 0, "marketplace", "marketplace packages");
@@ -2091,7 +2509,11 @@ fn main() {
     assert(cmdit_long_alias(lah, lam, "") == 0 - 1, "an empty name -> -1");
     assert(cmdit_long_alias(0, 0, "x") == 0 - 1 && cmdit_long_alias(lah, 99, "x") == 0 - 1,
       "bad handle / idx -> -1");
+    return 0;
+}
 
+# 1.3.6 cmdit_reject_flag_value: a flag is not a value (hapi F-019)
+fn g106_1_3_6_cmdit(): i64 {
     test_group("1.3.6 cmdit_reject_flag_value: a flag is not a value (hapi F-019)");
     var rfh = cmdit_new("hapi");
     var rr = cmdit_str(rfh, 114, "root", 0, "");
@@ -2145,8 +2567,13 @@ fn main() {
     assert(cmdit_error(rd) == CMDIT_ERR_MISSING_VALUE, "-> MISSING_VALUE from the dispatcher");
     assert(cmdit_reject_flag_value(0, 0) == 0 - 1 && cmdit_reject_flag_value(rfh, 99) == 0 - 1,
       "bad handle / idx -> -1");
+    return 0;
+}
 
-    # ══ 1.3.7: flag-table introspection + per-verb flags in completions ══════════
+# ══ 1.3.7: flag-table introspection + per-verb flags in completions ══════════
+# 1.3.7 flag-table introspection: what was registered (with the 1 group after it, which share its
+# fixtures)
+fn g107_1_3_7_flag(): i64 {
     test_group("1.3.7 flag-table introspection: what was registered");
     var fqh = cmdit_new("kriya");
     assert(cmdit_flag_count(fqh) == 2, "a new handle holds the auto --help and --version");
@@ -2231,7 +2658,11 @@ fn main() {
     assert(cmdit_flag_find_long(fqnh, fqnb, 2) == fqnf, "the span \"ab\" finds the flag named ab");
     assert(cmdit_flag_find_long(fqnh, fqnb, 5) == 0 - 1,
       "a span holding a NUL matches nothing, though the bytes past the name's NUL agree");
+    return 0;
+}
 
+# 1.3.7 cmdit_verb_flags: a verb's own flag handle
+fn g108_1_3_7_cmdit(): i64 {
     test_group("1.3.7 cmdit_verb_flags: a verb's own flag handle");
     var vfa = cmdit_new("ark");
     var vfai = cmdit_new("ark install");
@@ -2259,7 +2690,11 @@ fn main() {
     assert(vfm == vfar, "the matched verb's handle, found after dispatch");
     assert(cmdit_parse_argv(vfm, cmdit_verb_argc(vfa), cmdit_verb_argv(vfa)) == CMDIT_OK
       && cmdit_get_bool(vfm, vfpg) == 1, "parses the verb's remainder");
+    return 0;
+}
 
+# 1.3.7 per-verb flags in completions (with the 2 groups after it, which share its fixtures)
+fn g109_1_3_7_per(): i64 {
     test_group("1.3.7 per-verb flags in completions");
     var pvc = cmdit_new("ark");
     cmdit_bool(pvc, 0, "no-color", "");
@@ -2378,7 +2813,417 @@ fn main() {
       "bash: a verb with only the auto flags adds nothing to the globals, so it gets no arm");
     capture_completions(pvo, "zsh", pvb, 16384);
     assert(contains(pvb, "            go) compadd -- --help --version ;;\n") == 1, "zsh: it still offers them");
+    return 0;
+}
 
+# 1.4.0: the output-session sequences the buffering tests capture on fd 1.
+fn ob_probe(mode, h): i64 {
+    if (mode == 0) {                                 # the caller writes around a renderer
+        syscall(1, 1, "pre|", 4);
+        cmdit_version(h, "1");
+        syscall(1, 1, "|post", 5);
+    }
+    if (mode == 1) {                                 # a session nested on the same stream
+        var p1 = _cmdit_out_begin(1);
+        _cmdit_oprint("A");
+        var p2 = _cmdit_out_begin(1);
+        _cmdit_oprint("X");
+        _cmdit_out_end(p2);
+        _cmdit_oprint("B");
+        _cmdit_out_end(p1);
+    }
+    if (mode == 2) {                                 # a session nested on another stream
+        var nul = syscall(2, "/dev/null", 1, 0);
+        var se = syscall(32, 2);
+        syscall(33, nul, 2);
+        var q1 = _cmdit_out_begin(1);
+        _cmdit_oprint("A");
+        var q2 = _cmdit_out_begin(2);
+        _cmdit_eprint("to stderr");
+        _cmdit_out_end(q2);
+        _cmdit_oprint("B");
+        _cmdit_out_end(q1);
+        syscall(33, se, 2);
+        syscall(3, se);
+        syscall(3, nul);
+    }
+    if (mode == 3) {                                 # a write to another stream mid-session
+        var nul3 = syscall(2, "/dev/null", 1, 0);
+        var se3 = syscall(32, 2);
+        syscall(33, nul3, 2);
+        var r1 = _cmdit_out_begin(1);
+        _cmdit_oprint("A");
+        _cmdit_eprint("E");
+        _cmdit_oprint("B");
+        _cmdit_out_end(r1);
+        syscall(33, se3, 2);
+        syscall(3, se3);
+        syscall(3, nul3);
+    }
+    if (mode == 4) {                                 # pieces up to and past the buffer
+        var big = alloc(6001);
+        var bi = 0;
+        while (bi < 6000) { store8(big + bi, 48 + bi % 10); bi = bi + 1; }
+        store8(big + 6000, 0);
+        var w1 = _cmdit_out_begin(1);
+        _cmdit_oprint("<");
+        _cmdit_write(1, big, 4000);
+        if (_cmdit_ob_n > ob_peak) { ob_peak = _cmdit_ob_n; }
+        _cmdit_write(1, big, 6000);
+        if (_cmdit_ob_n > ob_peak) { ob_peak = _cmdit_ob_n; }
+        _cmdit_write(1, big, 4096);
+        if (_cmdit_ob_n > ob_peak) { ob_peak = _cmdit_ob_n; }
+        _cmdit_oprint(">");
+        _cmdit_out_end(w1);
+    }
+    return 0;
+}
+
+var ob_peak = 0;                                     # mode 4: the most the buffer held
+
+# 1.4.0: capture fd 1 around ob_probe(mode, h).
+fn capture_probe(mode, h, buf, cap): i64 {
+    var pfd[8];
+    if (syscall(22, &pfd) != 0) { return 0 - 1; }
+    var rfd = load32(&pfd);
+    var wfd = load32(&pfd + 4);
+    var saved = syscall(32, 1);
+    syscall(33, wfd, 1);
+    ob_probe(mode, h);
+    syscall(33, saved, 1);
+    syscall(3, wfd);
+    syscall(3, saved);
+    var n = syscall(0, rfd, buf, cap - 1);
+    syscall(3, rfd);
+    if (n < 0) { n = 0; }
+    store8(buf + n, 0);
+    return n;
+}
+
+# 1 when no output session is open and nothing is left in the buffer.
+fn ob_idle(): i64 {
+    if (_cmdit_ob_depth != 0 || _cmdit_ob_n != 0) { return 0; }
+    if (_cmdit_ob_fd != 0 - 1) { return 0; }
+    return 1;
+}
+
+# 1.4.0 buffered output: one write per renderer, same bytes, same order
+fn g110_1_4_0_buffered_output(): i64 {
+    test_group("1.4.0 buffered output: one write per renderer, same bytes, same order");
+    var obb = alloc(16384);
+    var obh = cmdit_new("tool");
+    assert(capture_probe(0, obh, obb, 16384) > 0, "capture");
+    assert(cstreq(obb, "pre|tool 1\n|post") == 1, "a renderer's output lands before the caller's next write");
+    capture_probe(1, obh, obb, 16384);
+    assert(cstreq(obb, "AXB") == 1, "a nested session on the same stream keeps the order");
+    capture_probe(2, obh, obb, 16384);
+    assert(cstreq(obb, "AB") == 1, "a nested session on another stream writes there, and the outer resumes");
+    capture_probe(3, obh, obb, 16384);
+    assert(cstreq(obb, "AB") == 1, "a write to another stream during a session goes there, not into the buffer");
+    var obpn = capture_probe(4, obh, obb, 16384);
+    assert(obpn == 1 + 4000 + 6000 + 4096 + 1, "pieces of 4000, 6000 and 4096 bytes all arrive");
+    assert(load8(obb) == 60 && load8(obb + 1) == 48 && load8(obb + 4001) == 48 && load8(obb + 10001) == 48
+      && load8(obb + obpn - 1) == 62, "in order");
+    assert(ob_peak <= 4096, "and the buffer never held more than its 4096 bytes");
+    assert(ob_idle() == 1, "no session is left open");
+    # Past the 4096-byte buffer: 50 flags with ~100-byte help each.
+    var obl = cmdit_new("big");
+    var obk = 0;
+    while (obk < 50) {
+        var obn = alloc(4);
+        store8(obn, 102); store8(obn + 1, 48 + obk / 10); store8(obn + 2, 48 + obk % 10); store8(obn + 3, 0);
+        var obt = alloc(101);
+        var obj = 0;
+        while (obj < 100) { store8(obt + obj, 97 + (obk + obj) % 26); obj = obj + 1; }
+        store8(obt + 100, 0);
+        cmdit_bool(obl, 0, obn, obt);
+        obk = obk + 1;
+    }
+    var obln = capture_render(obl, 1, 1, obb, 16384);
+    assert(obln > 4096, "the flag rows are longer than the buffer");
+    var obrows = 0;
+    var obi = 0;
+    while (obi < obln) { if (load8(obb + obi) == 10) { obrows = obrows + 1; } obi = obi + 1; }
+    assert(obrows == 52, "every row is there, once (50 + --help + --version)");
+    assert(index_of(obb, "--f00\t") < index_of(obb, "--f25\t") && index_of(obb, "--f25\t") < index_of(obb, "--f49\t"),
+      "in registration order across the flushes");
+    assert(ob_idle() == 1, "and the session is closed");
+    # One piece larger than the whole buffer goes straight out, after what was buffered.
+    var obg = cmdit_new("g");
+    var obgh = alloc(5001);
+    var obm = 0;
+    while (obm < 5000) { store8(obgh + obm, 121); obm = obm + 1; }
+    store8(obgh + 5000, 0);
+    cmdit_bool(obg, 0, "big", obgh);
+    cmdit_bool(obg, 0, "after", "z");
+    var obgn = capture_render(obg, 1, 1, obb, 16384);
+    var obat = index_of(obb, "      --big\t");
+    assert(obat > 0 && load8(obb + obat + 12) == 121 && load8(obb + obat + 12 + 4999) == 121,
+      "the 5000-byte help is there whole");
+    assert(cstreq(obb + obat + 12 + 5000, "\n      --after\tz\n") == 1, "and the row after it follows it");
+    assert(obgn == obat + 12 + 5000 + 17, "nothing else, nothing twice");
+    # Every renderer closes its session, whatever it printed.
+    var obe = cmdit_new("e");
+    cmdit_verb(obe, "add", "x");
+    var obev = alloc(3 * 8);
+    store64(obev, "e"); store64(obev + 8, "nope"); store64(obev + 16, 0);
+    cmdit_dispatch_argv(obe, 2, obev);
+    capture_print_error(obe, obb, 16384);
+    assert(contains(obb, "unknown command: nope\n\nCommands:\n  add\tx\n") == 1,
+      "an error line and its nested command list, in order");
+    assert(ob_idle() == 1, "print_error closes its session");
+    capture_completions(obe, "elvish", obb, 16384);
+    assert(load8(obb) == 0, "an unknown shell prints nothing");
+    assert(ob_idle() == 1, "completions close their session on the unknown-shell path too");
+    capture_completions(obe, "fish", obb, 16384);
+    assert(ob_idle() == 1, "and after a script");
+    capture_help(obe, obb, 16384);
+    capture_version(obe, "2", obb, 16384);
+    capture_render(obe, 2, 1, obb, 16384);
+    assert(ob_idle() == 1, "help, version and the verb list close theirs");
+    return 0;
+}
+
+# 1.4.0 lazy verb table: rows survive the table moving as it doubles
+fn g111_1_4_0_lazy_verb_table(): i64 {
+    test_group("1.4.0 lazy verb table: rows survive the table moving as it doubles");
+    var lv = cmdit_new("big");
+    assert(load64(lv + _CMDIT_H_VERBS) == 0, "no table before the first verb");
+    var lvh = cmdit_new("big v7");
+    cmdit_bool(lvh, 0, "seven", "");
+    var lvk = 0;
+    while (lvk < 40) {
+        var lvn = alloc(4);
+        store8(lvn, 118); store8(lvn + 1, 48 + lvk / 10); store8(lvn + 2, 48 + lvk % 10); store8(lvn + 3, 0);
+        assert(cmdit_verb(lv, lvn, lvn) == lvk, "verb ids are row indices");
+        if (lvk == 0) { assert(load64(lv + _CMDIT_H_VERBS_CAP) == 16, "the first verb allocates 16 rows"); }
+        if (lvk == 3) { cmdit_verb_hidden(lv, 3); }
+        if (lvk == 5) { cmdit_verb_trailing_after(lv, 5, 1); }
+        if (lvk == 7) { cmdit_verb_flags(lv, 7, lvh); }
+        if (lvk == 16) { assert(load64(lv + _CMDIT_H_VERBS_CAP) == 32, "the 17th doubles it"); }
+        lvk = lvk + 1;
+    }
+    assert(load64(lv + _CMDIT_H_VERBS_CAP) == 64, "40 verbs -> 64 rows");
+    assert(cmdit_verb_alias(lv, 0, "first") == 0, "an alias added after the moves");
+    assert(cstreq(cmdit_verb_name_at(lv, 0), "v00") == 1 && cstreq(cmdit_verb_name_at(lv, 39), "v39") == 1,
+      "names from before and after the moves");
+    assert(cstreq(cmdit_verb_name_at(lv, 15), "v15") == 1 && cstreq(cmdit_verb_name_at(lv, 31), "v31") == 1,
+      "the last row before each move came along");
+    assert(cstreq(cmdit_verb_help_at(lv, 40), "v00") == 1, "the alias row reads its verb's help");
+    assert(cmdit_verb_is_hidden(lv, 3) == 1 && cmdit_verb_is_hidden(lv, 4) == 0, "the hidden mark survived");
+    assert(cmdit_verb_trailing_at(lv, 5) == 1, "the trailing mark survived");
+    assert(cmdit_verb_flags_at(lv, 7) == lvh, "the attached handle survived");
+    var lva = alloc(4 * 8);
+    store64(lva, "big"); store64(lva + 8, "first"); store64(lva + 16, "x"); store64(lva + 24, 0);
+    assert(cmdit_dispatch_argv(lv, 3, lva) == CMDIT_OK && cmdit_verb_matched(lv) == 0, "the alias dispatches");
+    var lvb = cmdit_new("big");
+    var lvj = 0;
+    while (lvj < 128) { cmdit_verb(lvb, "v", ""); lvj = lvj + 1; }
+    assert(load64(lvb + _CMDIT_H_VERBS_CAP) == 128 && cmdit_verb(lvb, "w", "") == 0 - 1,
+      "it stops at 128 rows, and the 129th is refused");
+    return 0;
+}
+
+# 1.4.0 lazy entry table: flags and their modifiers survive the table moving
+fn g112_1_4_0_lazy_entry_table(): i64 {
+    test_group("1.4.0 lazy entry table: flags and their modifiers survive the table moving");
+    var le = cmdit_new("big");
+    assert(load64(le + _CMDIT_H_ENTRIES_CAP) == 16, "cmdit_new allocates 16 entries");
+    var lec = cmdit_enum(le, 0, "color", "auto", "auto|always|never", "c");
+    cmdit_enum_nocase(le, lec);
+    var len_ = cmdit_int(le, 110, "num", 5, "n");
+    cmdit_range(le, len_, 1, 9);
+    cmdit_once(le, len_);
+    var leo = cmdit_str(le, 111, "out", "a.txt", "o");
+    cmdit_metavar(le, leo, "FILE");
+    cmdit_long_alias(le, leo, "output");
+    cmdit_reject_flag_value(le, leo);
+    var leh = cmdit_repeat(le, 72, "header", "h");
+    var ler = cmdit_bool(le, 0, "sure", "s");
+    cmdit_required(le, ler);
+    var lek = 0;
+    while (lek < 35) {
+        var lenm = alloc(4);
+        store8(lenm, 102); store8(lenm + 1, 48 + lek / 10); store8(lenm + 2, 48 + lek % 10); store8(lenm + 3, 0);
+        cmdit_bool(le, 0, lenm, "");
+        lek = lek + 1;
+    }
+    assert(cmdit_flag_count(le) == 42 && load64(le + _CMDIT_H_ENTRIES_CAP) == 64, "42 flags -> 64 entries");
+    assert(cstreq(cmdit_flag_choices_at(le, lec), "auto|always|never") == 1, "an enum's choices survived");
+    assert(cstreq(cmdit_flag_metavar_at(le, leo), "FILE") == 1, "a metavar survived");
+    assert(cstreq(cmdit_flag_long_alias_at(le, leo), "output") == 1, "a second long name survived");
+    assert(cmdit_flag_is_required(le, ler) == 1 && cmdit_flag_is_repeat(le, leh) == 1, "required and repeat bits");
+    assert(cmdit_get_int(le, len_) == 5 && cstreq(cmdit_get_str(le, leo), "a.txt") == 1, "defaults");
+    var lea = alloc(12 * 8);
+    store64(lea, "big"); store64(lea + 8, "--color=NEVER"); store64(lea + 16, "-n"); store64(lea + 24, "7");
+    store64(lea + 32, "--output"); store64(lea + 40, "x"); store64(lea + 48, "-H"); store64(lea + 56, "a");
+    store64(lea + 64, "-H"); store64(lea + 72, "b"); store64(lea + 80, "--f34"); store64(lea + 88, 0);
+    assert(cmdit_parse_argv(le, 11, lea) == CMDIT_OK, "a parse over flags from both sides of the moves");
+    assert(cmdit_get_enum(le, lec) == 2, "case-insensitive enum");
+    assert(cmdit_get_int(le, len_) == 7 && cstreq(cmdit_get_str(le, leo), "x") == 1, "values");
+    assert(cmdit_repeat_count(le, leh) == 2, "the repeat list");
+    assert(cmdit_get_bool(le, cmdit_flag_find_long(le, "f34", 3)) == 1, "the last flag");
+    assert(cmdit_finalize(le) == CMDIT_RESULT_ERR && cmdit_error(le) == CMDIT_ERR_REQUIRED_MISSING
+      && cmdit_err_flag(le) == ler, "the required flag is still checked");
+    store64(lea + 8, "--num=4"); store64(lea + 16, "--num=5"); store64(lea + 24, 0);
+    var le2 = cmdit_new("t");
+    var le2n = cmdit_int(le2, 0, "num", 0, "");
+    cmdit_once(le2, le2n);
+    assert(cmdit_parse_argv(le2, 3, lea) == CMDIT_RESULT_ERR && cmdit_err_flag(le2) == le2n, "a failed parse");
+    var lej = 0;
+    while (lej < 20) { cmdit_bool(le2, 0, "z", ""); lej = lej + 1; }
+    assert(load64(le2 + _CMDIT_H_ENTRIES_CAP) == 32, "registrations after it moved the table");
+    assert(cmdit_err_flag(le2) == le2n, "cmdit_err_flag still names the flag (err_entry moved with the table)");
+    var leb = alloc(256);
+    capture_print_error(le2, leb, 256);
+    assert(cstreq(leb, "t: --num: may be given only once\n") == 1, "and the error line still names it");
+    return 0;
+}
+
+# 1.4.0 long-name lookup: the first-byte prefilter and pointer walk change no answer
+fn g113_1_4_0_long_name_lookup(): i64 {
+    test_group("1.4.0 long-name lookup: the first-byte prefilter and pointer walk change no answer");
+    var lk = cmdit_new("t");
+    var lkv = cmdit_bool(lk, 0, "vision", "");
+    var lkf = cmdit_bool(lk, 0, "vision-fd", "");
+    var lka = cmdit_bool(lk, 0, "view", "");
+    cmdit_long_alias(lk, lka, "v");
+    var lke = cmdit_bool(lk, 0, "", "");
+    assert(cmdit_flag_find_long(lk, "vision-fd", 9) == lkf, "names sharing a first byte: the longer one");
+    assert(cmdit_flag_find_long(lk, "vision", 6) == lkv, "and the shorter one");
+    assert(cmdit_flag_find_long(lk, "version", 7) == 1, "and the auto --version among them");
+    assert(cmdit_flag_find_long(lk, "v", 1) == lka, "a one-byte second long name");
+    assert(cmdit_flag_find_long(lk, "vi", 2) == 0 - 1, "a shared prefix alone matches nothing");
+    assert(cmdit_flag_find_long(lk, "=x", 0) == lke, "an empty span finds the flag with an empty long name");
+    var lkp = alloc(3 * 8);
+    store64(lkp, "t"); store64(lkp + 8, "--=x"); store64(lkp + 16, 0);
+    assert(cmdit_parse_argv(lk, 2, lkp) == CMDIT_RESULT_ERR && cmdit_err_flag(lk) == lke,
+      "as the parser does for --=x (a bool given a value)");
+    var lk2 = cmdit_new("t");
+    cmdit_bool(lk2, 0, "x", "");
+    assert(cmdit_flag_find_long(lk2, "=x", 0) == 0 - 1, "and without one, an empty span matches nothing");
+    assert(cmdit_flag_find_short(lk2, 0) == 0 - 1, "a short lookup of byte 0 matches nothing either");
+    return 0;
+}
+
+# Run every test group against the pure parse/dispatch cores and the renderers. 1.4.0:
+# each group is its own function, so a fixture name no longer has to be unique across
+# the whole suite (one shared main made every collision a build error).
+fn main() {
+    alloc_init();
+    g001_parse_bool_int_str();
+    g002_parse_key_value_attached();
+    g003_parse_terminator_stops_flag();
+    g004_parse_lone_positional_stdin();
+    g005_error_unknown_flag_cmdit();
+    g006_error_missing_value_last();
+    g007_error_non_numeric_int();
+    g008_error_int_overflow_rejected();
+    g009_error_bundled_attached_short();
+    g010_auto_help_short_circuits();
+    g011_auto_v_short_circuits();
+    g012_c5_remap_disable_auto();
+    g013_defaults_absent_flag_keeps();
+    g014_enum_valid_choice_accepted();
+    g015_enum_value_form_first();
+    g016_enum_invalid_choice_bad();
+    g017_enum_absent_keeps_default();
+    g018_range_range_ok_boundaries();
+    g019_range_below_min_above();
+    g020_required_present_finalize_ok();
+    g021_required_absent_str_required();
+    g022_required_bool_distinguishes_absent();
+    g023_repeat_multiple_occurrences_accumulate();
+    g024_repeat_zero_occurrences_count();
+    g025_env_purity_cmdit_parse();
+    g026_env_cli_value_wins();
+    g027_env_unset_var_default();
+    g028_env_bool_presence_required();
+    g029_env_non_fatal_bad();
+    g030_env_non_fatal_failure();
+    g031_range_degenerate_min_max();
+    g032_enum_get_enum_non();
+    g033_getters_negative_out_range();
+    g034_c3_metavar_shown_defaults();
+    g035_repeat_list_grows_past();
+    g036_err_flag_names_offending();
+    g037_end_end_cmdit_parse();
+    g038_basename_strips_directory_passthrough();
+    g039_verb_match_matched_id();
+    g040_verb_after_verb_reaches();
+    g041_verb_before_verb_still();
+    g042_verb_trailing_verbatim_keeps();
+    g043_verb_trailing_verbatim_survives();
+    g044_verb_trailing_verbatim_does();
+    g045_verb_unmarked_verb_unchanged();
+    g046_verb_alias_resolves_canonical();
+    g047_verb_unknown_unknown_verb();
+    g048_verb_no_verb_token();
+    g049_verb_global_flag_before();
+    g050_verb_global_flag_after();
+    g051_verb_global_str_before();
+    g052_verb_unknown_flag_after();
+    g053_verb_help_before_verb();
+    g054_verb_before_verb_still();
+    g055_verb_re_parse_remainder();
+    g056_verb_nested_sub_verb();
+    g057_require_positionals_count_gate();
+    g058_c1_require_positionals_max();
+    g059_verb_global_required_satisfied();
+    g060_parse_negative_int_value();
+    g061_error_unknown_short_flag();
+    g062_error_short_value_flag();
+    g063_enum_prefix_valid_choice();
+    g064_verb_unknown_flag_before();
+    g065_verb_global_value_flag();
+    g066_verb_cmdit_verb_alias();
+    g067_parse_cmdit_new_0();
+    g068_limit_registering_past_cmdit();
+    g069_limit_registering_past_cmdit();
+    g070_render_cmdit_help_renders();
+    g071_render_cmdit_verbs_help();
+    g072_render_cmdit_version_line();
+    g073_render_cmdit_print_error();
+    g074_verb_introspection();
+    g075_completions();
+    g076_1_2_4_security();
+    g077_1_2_4_memory();
+    g078_1_2_4_memory();
+    g079_1_2_4_null();
+    g080_1_2_4_correctness();
+    g081_1_2_4_input();
+    g082_1_3_0_argv();
+    g083_1_3_1_positionals();
+    g084_1_3_1_bool();
+    g085_1_2_4_security();
+    g086_1_3_2_0();
+    g087_1_3_2_dispatch();
+    g088_1_3_2_zsh();
+    g089_1_3_2_verb();
+    g090_1_3_2_cmdit();
+    g091_1_3_2_trailing();
+    g092_1_3_2_tool();
+    g093_1_3_2_right();
+    g094_1_3_2_bundled();
+    g095_1_3_2_trailing();
+    g096_1_3_2_argv();
+    g097_1_3_2_public();
+    g098_1_3_2_security();
+    g099_1_3_3_cmdit();
+    g100_1_3_4_cmdit();
+    g101_1_3_4_stop();
+    g102_1_3_5_verb();
+    g103_1_3_6_cmdit();
+    g104_1_3_6_cmdit();
+    g105_1_3_6_cmdit();
+    g106_1_3_6_cmdit();
+    g107_1_3_7_flag();
+    g108_1_3_7_cmdit();
+    g109_1_3_7_per();
+    g110_1_4_0_buffered_output();
+    g111_1_4_0_lazy_verb_table();
+    g112_1_4_0_lazy_entry_table();
+    g113_1_4_0_long_name_lookup();
     return assert_summary();
 }
 

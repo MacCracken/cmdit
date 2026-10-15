@@ -7,8 +7,8 @@
 #   parse-loop cost  = parse_argv_mixed.avg - setup_baseline.avg
 #   register cost    = setup_baseline.avg   - cmdit_new_floor.avg
 #   single-pass proof: dispatch_after_verb.avg ~= dispatch_before_verb.avg
-# cmdit_new allocs ~7.8 KB into a free-less bump allocator, so the alloc-heavy
-# benches run a bounded 4096 iters (~32 MB), not a 1e6 loop; the pure leaves
+# cmdit_new allocs ~3 KB (~8.9 KB before 1.4.0) into a free-less bump allocator, so the
+# alloc-heavy benches run a bounded 4096 iters, not a 1e6 loop; the pure leaves
 # (get_enum, dispatch) run high iteration counts to amortize the ~240ns clock pair.
 include "lib/vec.cyr"
 include "lib/args.cyr"      # pulls alloc + syscalls (alloc_init / the synthetic argv arrays)
@@ -18,17 +18,19 @@ include "lib/io.cyr"
 include "lib/bench.cyr"
 include "src/cmdit.cyr"
 
-var BOUND = 4096;           # alloc-heavy bench iters (fresh ~7.8KB handle each)
+var BOUND = 4096;           # alloc-heavy bench iters (a fresh ~3 KB handle each)
 var HOT = 1000000;          # pure-leaf bench iters (no per-iter alloc)
 var DISP = 200000;          # dispatch bench iters (~40B remainder alloc each)
+var OUT = 20000;            # 1.4.0: output-path iters (no per-iter alloc)
+var OUTC = 2000;            # 1.4.0: all three completion scripts per iter
 
 # Run the cmdit micro-benchmarks (see docs/benchmarks.md for the methodology).
 fn main(): i64 {
     alloc_init();
 
-    # 1. cmdit_new_floor — the fixed per-handle construction floor (alloc + the
-    #    7168-byte entry-table zero, word-at-a-time since 1.3.0, + 2 auto
-    #    registrations). Dominant term below.
+    # 1. cmdit_new_floor — the fixed per-handle construction floor: the allocs, zeroing
+    #    the first 16 entries (1,920 B since 1.4.0; all 64, 7,680 B, before), and the 2
+    #    auto registrations.
     var b1 = bench_new("cmdit_new_floor");
     bench_batch_start(b1);
     var i1 = 0;
@@ -133,9 +135,8 @@ fn main(): i64 {
     bench_report(b7);
 
     # 8. verb_new_floor — a verb tool's construction floor: cmdit_new + the first
-    #    cmdit_verb, which allocates and zeroes the verb table, 128 rows of 48 B =
-    #    6144 bytes since 1.3.7 (1.3.2: word-at-a-time; it was a byte loop costing
-    #    ~5.6 us). Subtract #1 for the verb table alone.
+    #    cmdit_verb, which allocates and zeroes the verb table: 16 rows of 48 B since
+    #    1.4.0, all 128 (6,144 B) before. Subtract #1 for the verb table alone.
     var b8 = bench_new("verb_new_floor");
     bench_batch_start(b8);
     var i8 = 0;
@@ -162,6 +163,87 @@ fn main(): i64 {
     while (i9 < HOT) { cmdit_flag_find_long(hf, "color=never", 5); i9 = i9 + 1; }
     bench_batch_stop(b9, HOT);
     bench_report(b9);
+
+    # 10. flag_find_long_36 — 1.4.0: the same lookup on attn11's table, its 36 real long
+    #     names (cmdit's ~35-flag sizing case), for the last one registered: the scan's
+    #     worst case at that size, with first letters spread as a real tool's are.
+    var h36 = cmdit_new("attn11");
+    var nm36 = alloc(36 * 8);
+    store64(nm36, "attn-every"); store64(nm36 + 8, "attn-kind"); store64(nm36 + 16, "bpe");
+    store64(nm36 + 24, "corpus"); store64(nm36 + 32, "ctx"); store64(nm36 + 40, "d-model");
+    store64(nm36 + 48, "decode-schedule"); store64(nm36 + 56, "decode-steps"); store64(nm36 + 64, "encode-shard");
+    store64(nm36 + 72, "eval"); store64(nm36 + 80, "eval-corpus"); store64(nm36 + 88, "expert-topk");
+    store64(nm36 + 96, "experts"); store64(nm36 + 104, "gen-only"); store64(nm36 + 112, "gpu");
+    store64(nm36 + 120, "gpu-tc"); store64(nm36 + 128, "heads"); store64(nm36 + 136, "hearing");
+    store64(nm36 + 144, "hearing-fd"); store64(nm36 + 152, "kv-heads"); store64(nm36 + 160, "latent-dim");
+    store64(nm36 + 168, "layers"); store64(nm36 + 176, "load"); store64(nm36 + 184, "mtp");
+    store64(nm36 + 192, "objective"); store64(nm36 + 200, "pos-kind"); store64(nm36 + 208, "preset");
+    store64(nm36 + 216, "rope-dim"); store64(nm36 + 224, "save"); store64(nm36 + 232, "stdin");
+    store64(nm36 + 240, "steps"); store64(nm36 + 248, "stream-corpus"); store64(nm36 + 256, "stream-encode");
+    store64(nm36 + 264, "ternary"); store64(nm36 + 272, "vision"); store64(nm36 + 280, "vision-fd");
+    var k36 = 0;
+    while (k36 < 36) { cmdit_bool(h36, 0, load64(nm36 + k36 * 8), ""); k36 = k36 + 1; }
+    var b10 = bench_new("flag_find_long_36");
+    bench_batch_start(b10);
+    var i10 = 0;
+    while (i10 < HOT) { cmdit_flag_find_long(h36, "vision-fd", 9); i10 = i10 + 1; }
+    bench_batch_stop(b10, HOT);
+    bench_report(b10);
+
+    # 11-13. 1.4.0: the output paths, written to /dev/null. Each renders the same handle
+    #     the same way every iteration, so these measure the writing, mostly write(2).
+    #     The stream is pointed at /dev/null only around the timed loop.
+    var ho = cmdit_new("tool");
+    cmdit_bool(ho, 118, "verbose", "be verbose");
+    cmdit_str(ho, 114, "root", "/var/lib/tool", "storage root");
+    cmdit_int(ho, 106, "jobs", 4, "parallel jobs");
+    cmdit_enum(ho, 0, "color", "auto", "auto|always|never", "when to color");
+    cmdit_repeat(ho, 72, "header", "extra header");
+    var vo = cmdit_verb(ho, "run", "Run it (it's one-shot)");
+    cmdit_verb(ho, "ps", "List things");
+    var vro = cmdit_verb(ho, "rm", "Remove a thing");
+    cmdit_verb_alias(ho, vro, "remove");
+    var hvo = cmdit_new("tool run");
+    cmdit_bool(hvo, 100, "detach", "run in the background");
+    cmdit_verb_flags(ho, vo, hvo);
+    var nul = syscall(2, "/dev/null", 1, 0);
+    var b11 = bench_new("help_fd_devnull");
+    bench_batch_start(b11);
+    var i11 = 0;
+    while (i11 < OUT) { cmdit_help_fd(ho, nul); i11 = i11 + 1; }
+    bench_batch_stop(b11, OUT);
+    bench_report(b11);
+
+    var hpe = cmdit_new("tool");
+    cmdit_enum(hpe, 0, "color", "auto", "auto|always|never", "");
+    var ape = alloc(3 * 8); store64(ape, "tool"); store64(ape + 8, "--color=purple"); store64(ape + 16, 0);
+    cmdit_parse_argv(hpe, 2, ape);
+    var se2 = syscall(32, 2);
+    syscall(33, nul, 2);
+    var b12 = bench_new("print_error_devnull");
+    bench_batch_start(b12);
+    var i12 = 0;
+    while (i12 < OUT) { cmdit_print_error(hpe); i12 = i12 + 1; }
+    bench_batch_stop(b12, OUT);
+    syscall(33, se2, 2);
+    syscall(3, se2);
+    bench_report(b12);
+
+    var so1 = syscall(32, 1);
+    syscall(33, nul, 1);
+    var b13 = bench_new("completions_devnull");
+    bench_batch_start(b13);
+    var i13 = 0;
+    while (i13 < OUTC) {
+        cmdit_completions(ho, "bash");
+        cmdit_completions(ho, "zsh");
+        cmdit_completions(ho, "fish");
+        i13 = i13 + 1;
+    }
+    bench_batch_stop(b13, OUTC);
+    syscall(33, so1, 1);
+    syscall(3, so1);
+    bench_report(b13);
 
     return 0;
 }

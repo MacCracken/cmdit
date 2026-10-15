@@ -5,7 +5,7 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.3.7 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.4.0 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
 faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`); 1.3.2 is an
@@ -13,8 +13,9 @@ audit sweep with a completion-script security fix; 1.3.3 adds `cmdit_err_token` 
 `cmdit_err_value` and error lines that name the offending text; 1.3.4 adds POSIX
 `cmdit_stop_at_positional`; 1.3.5 adds help on a chosen stream and hidden verbs; 1.3.6 adds
 four small modifiers (once-only, case-insensitive choices, a second long name, refusing a
-flag-shaped value); 1.3.7 adds flag-table introspection and per-verb flags in completions.
-**1.2.4 is a security release** — the completion generator interpolated
+flag-shaped value); 1.3.7 adds flag-table introspection and per-verb flags in completions;
+1.4.0 is a refactor and speed sweep with no API or output change (a parse ~2× faster,
+`--help` over 10×). **1.2.4 is a security release** — the completion generator interpolated
 the program name, which on the `cmdit_new(0)` path comes from `argv[0]`, raw into the
 scripts it emits; it also closes three memory-safety/contract defects. No API change.
 **Consumers on any earlier version that generate completions should update.**
@@ -292,6 +293,11 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   `_find_long` (kriya), and `cmdit_verb_flags`, which puts each verb's own flags in all three
   completion scripts (ark). Fixes fish quoting of a help text containing a backslash.
   **786/786 tests**, 38/39 seeded reverts caught (the survivor is unobservable).
+- **1.4.0** — refactor and optimization sweep; no API or output change. Named field
+  offsets, one token-to-flag path for both parse cores, flag and verb tables that grow on
+  demand, one write(2) per rendered help, error line or completion script, and faster
+  long-name lookup. **887/887 tests**, 27/31 seeded reverts caught (the 4 survivors are
+  unobservable).
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -300,6 +306,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (786/786)
+cyrius test                                          # run tests/*.tcyr  (887/887)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```
