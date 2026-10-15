@@ -9,8 +9,8 @@
 #   I1  the result is one of OK / HELP / VERSION / RESULT_ERR
 #   I2  cmdit_error is a CmditErr, and it is NONE exactly when the parse is clean
 #   I3  cmdit_err_flag names a registered flag for MISSING_VALUE / BAD_INT /
-#       BAD_ENUM / OUT_OF_RANGE / REQUIRED_MISSING / UNEXPECTED_VALUE, and is -1
-#       for UNKNOWN / BUNDLED / UNKNOWN_VERB
+#       BAD_ENUM / OUT_OF_RANGE / REQUIRED_MISSING / UNEXPECTED_VALUE / REPEATED,
+#       and is -1 for UNKNOWN / BUNDLED / UNKNOWN_VERB
 #   I4  every positional and every remainder-slice token is one of the argv
 #       tokens (pointer identity), and the counts fit inside argc
 #   I5  on a clean parse the modifiers hold: the enum index is a choice, the
@@ -44,14 +44,14 @@ var FZ_SEEDS = 16;         # seeds per run
 var FZ_ITERS = 400;        # iterations per seed
 var FZ_MAXTOK = 24;        # argv tokens after argv[0]
 var FZ_BIGTOK = 400;       # every 50th argv: past the 128 / 64 initial capacities
-var FZ_POOL_N = 48;
+var FZ_POOL_N = 52;
 
 var _fz_state = 0;
 var _fz_seed = 0;
 var _fz_iter = 0;
 var _fz_argc = 0;
 var _fz_argv = 0;
-var _fz_pool[384];         # FZ_POOL_N cstr pointers
+var _fz_pool[416];         # FZ_POOL_N cstr pointers
 
 # Write a NUL-terminated string to stdout / stderr.
 fn _fz_out(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
@@ -118,6 +118,8 @@ fn _fz_build_pool(): i64 {
     store64(t + 336, "file.txt");       store64(t + 344, "-1");
     store64(t + 352, "--verbose=0");            store64(t + 360, "--loud=1");
     store64(t + 368, "--name=");        store64(t + 376, "--header");
+    store64(t + 384, "--hdr");          store64(t + 392, "--hdr=z");          # 1.3.6: long alias
+    store64(t + 400, "--color=NEVER");  store64(t + 408, "--count=3");      # nocase; once
     return 0;
 }
 
@@ -217,11 +219,15 @@ fn _fz_cmd_handle(): i64 {
     var h = cmdit_new("prog");
     var f_name = cmdit_str(h, 110, "name", 0, "name");
     cmdit_env(h, f_name, "CMDIT_FUZZ_NEVER_SET");
+    cmdit_reject_flag_value(h, f_name);                           # 1.3.6
     var f_count = cmdit_int(h, 99, "count", 1, "count");
     cmdit_range(h, f_count, 1, 10);
+    cmdit_once(h, f_count);                                       # 1.3.6
     cmdit_bool(h, 0, "loud", "loud");
-    cmdit_enum(h, 0, "color", "auto", "auto|always|never", "color");
-    cmdit_repeat(h, 72, "header", "header");
+    var f_color = cmdit_enum(h, 0, "color", "auto", "auto|always|never", "color");
+    cmdit_enum_nocase(h, f_color);                                # 1.3.6
+    var f_hdr = cmdit_repeat(h, 72, "header", "header");
+    cmdit_long_alias(h, f_hdr, "hdr");                            # 1.3.6
     var f_req = cmdit_bool(h, 0, "i-mean-it", "required");
     cmdit_required(h, f_req);
     return h;
@@ -246,7 +252,7 @@ fn _fz_check_result(h, rc, nflags): i64 {
     _fz_check(rc == CMDIT_OK || rc == CMDIT_HELP || rc == CMDIT_VERSION || rc == CMDIT_RESULT_ERR,
       "I1 undocumented result code");
     var err = cmdit_error(h);
-    _fz_check(err >= CMDIT_ERR_NONE && err <= CMDIT_ERR_ARGV, "I2 error outside CmditErr");
+    _fz_check(err >= CMDIT_ERR_NONE && err <= CMDIT_ERR_REPEATED, "I2 error outside CmditErr");
     if (rc == CMDIT_RESULT_ERR) {
         _fz_check(err != CMDIT_ERR_NONE, "I2 RESULT_ERR with ERR_NONE");
     } else {
@@ -262,7 +268,7 @@ fn _fz_check_result(h, rc, nflags): i64 {
     var names_one = 0;
     if (err == CMDIT_ERR_MISSING_VALUE || err == CMDIT_ERR_BAD_INT || err == CMDIT_ERR_BAD_ENUM) { names_one = 1; }
     if (err == CMDIT_ERR_OUT_OF_RANGE || err == CMDIT_ERR_REQUIRED_MISSING) { names_one = 1; }
-    if (err == CMDIT_ERR_UNEXPECTED_VALUE) { names_one = 1; }                           # 1.3.1
+    if (err == CMDIT_ERR_UNEXPECTED_VALUE || err == CMDIT_ERR_REPEATED) { names_one = 1; }   # 1.3.1, 1.3.6
     if (names_one == 1) {
         _fz_check(ef >= 0 && ef < nflags, "I3 err_flag does not name a registered flag");
     }
@@ -274,6 +280,7 @@ fn _fz_check_result(h, rc, nflags): i64 {
     var has_tok = _cmdit_is_value_err(err);
     if (err == CMDIT_ERR_UNKNOWN || err == CMDIT_ERR_BUNDLED) { has_tok = 1; }
     if (err == CMDIT_ERR_UNKNOWN_VERB || err == CMDIT_ERR_MISSING_VALUE) { has_tok = 1; }
+    if (err == CMDIT_ERR_REPEATED) { has_tok = 1; }
     if (has_tok == 1) { _fz_check(tk != 0, "I7 an error about a token carries none"); }
     if (_cmdit_is_value_err(err) == 1) {
         _fz_check(vl != 0, "I7 a value error without its value");

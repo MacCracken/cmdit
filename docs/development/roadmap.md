@@ -11,8 +11,9 @@ v1.0.0 (2026-06-25) froze the public API. Every v1.0 criterion and milestones M0
 are append-only on the frozen surface. 1.3.2 was a full audit sweep
 ([`../audit/2026-10-14-audit.md`](../audit/2026-10-14-audit.md)), and 1.3.3 shipped the first
 pinned survey gap, `cmdit_err_token` / `cmdit_err_value`; 1.3.4 shipped
-`cmdit_stop_at_positional`; 1.3.5 the `_fd` help renderers and hidden verbs. For details, see
-the CHANGELOG and ADRs [0001](../adr/0001-flag-modifiers.md) /
+`cmdit_stop_at_positional`; 1.3.5 the `_fd` help renderers and hidden verbs; 1.3.6
+`cmdit_once` / `cmdit_enum_nocase` / `cmdit_long_alias` / `cmdit_reject_flag_value`. For
+details, see the CHANGELOG and ADRs [0001](../adr/0001-flag-modifiers.md) /
 [0002](../adr/0002-verb-dispatch.md) / [0003](../adr/0003-v1-freeze.md).
 
 ## Adoption — demand-gated, not a forced sweep
@@ -40,15 +41,11 @@ surfaces ships append-only (that is how `cmdit_help_flags`, verb introspection, 
 The 2026-10-14 adoption survey of the 18 hand-rolled candidates found where cmdit cannot
 express a real tool's CLI. Its two worst gaps shipped in 1.3.1 (silent positional/repeat caps,
 `--bool=0`), the offending-token accessor (seven repos) in 1.3.3, POSIX
-stop-at-first-positional in 1.3.4 (those two cleared shakti's blockers), and help on a chosen
-stream plus hidden verbs in 1.3.5. The rest are pinned below, one theme per release, ordered
-by how many repos each unblocks. Every item is append-only on the frozen 1.0.0 surface.
+stop-at-first-positional in 1.3.4 (those two cleared shakti's blockers), help on a chosen
+stream plus hidden verbs in 1.3.5, and four small modifiers in 1.3.6. The rest are pinned
+below, one theme per release, ordered by how many repos each unblocks. Every item is
+append-only on the frozen 1.0.0 surface.
 
-- [ ] **1.3.6 — small modifiers**, each requested by one repo:
-  - a once-only flag, or a per-flag occurrence count (cyim; 9 smoke cases assert it);
-  - case-insensitive enum matching (phylax `--severity-threshold`);
-  - a second long name for a flag (ark `--marketplace|--market`);
-  - refusing a flag-shaped value (hapi audit F-019).
 - [ ] **1.3.7 — flag-table introspection.**
   - `cmdit_flag_*_at` accessors mirroring the 1.2.0 verb ones (kriya's expander and
     `--help=json`).

@@ -4,6 +4,75 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-10-14
+
+**Four small modifiers, each asked for by one tool in the adoption survey.** This is the
+fourth pinned 1.3.x item. Everything is append-only: four functions, one error code
+(`CMDIT_ERR_REPEATED = 14`) and three attribute bits. The flag entry grows 112 → 120 B for the
+alias name. **629 → 694 assertions**, and 16/16 seeded reverts are caught.
+
+| modifier | for | behaviour |
+|---|---|---|
+| `cmdit_once(h, idx)` | cyim | a second command-line occurrence fails with `CMDIT_ERR_REPEATED`, naming the flag and the repeated token. Last-wins stays the default |
+| `cmdit_enum_nocase(h, idx)` | phylax | enum choices match ASCII case-insensitively. `cmdit_get_enum` gives the choice's index, `cmdit_get_str` the text as typed |
+| `cmdit_long_alias(h, idx, name)` | ark | a second long name, matched by both parse cores, shown in help and offered by bash completion |
+| `cmdit_reject_flag_value(h, idx)` | hapi | a flag-shaped **separate** value is `CMDIT_ERR_MISSING_VALUE` instead of being taken |
+
+### Each one, grounded in the tool that asked
+
+- **cyim's** smoke tests refuse a single flag given twice, with exit 2: `--context=1
+  --context=2`, `--wc --wc`, `--regex=ere --regex=ere`, and four more (cases 26, 28, 30, 31,
+  41, 66, 87d). `cmdit_print_error` says `--context: may be given only once`. Its two
+  *cross-flag* cases (27, 29, `--expect` against `--expect-not`) are mutual exclusion, which
+  stays on the v2 backlog. An env fallback never counts as an occurrence; it only applies to
+  a flag the command line did not set.
+- **phylax** lowercased `--severity-threshold` itself before matching. With the modifier,
+  `HiGh` selects `high`, a prefix is still not a match, and a non-choice is still `BAD_ENUM`
+  with its value.
+- **ark's** `list` accepts `--marketplace|--market` and `--system|--apt`. The alias is matched
+  exactly like the first name, never as a prefix, including as a global after the verb. Help
+  renders `--marketplace, --market`. bash completion lists both names, and skips the value
+  after either one.
+- **hapi** audit **F-019**: `--root --dry-run pkg` took `--dry-run` as the root and, on a run
+  the user asked to be a no-op, created `$HOME/--dry-run/` at exit 0. Under the modifier, a
+  separate value starting with `-` is refused, with three exceptions that keep the guard from
+  refusing real input:
+  - a lone `-` (stdin);
+  - a number such as `-5` for an int flag;
+  - an attached `--root=--dry-run`, which the `=` makes deliberate.
+
+  It applies to the long and short forms and to globals in the dispatcher. Without the
+  modifier, cmdit still takes the next token, as getopt does.
+
+### Tests
+
+- **+65 assertions (629 → 694):** each modifier through both parse cores, its error lines,
+  its boundaries (the exceptions above, prefixes, env interplay, repeat flags, the unchanged
+  defaults), and bad handles and indices.
+- **The fuzz harness's single-command handle now carries all four modifiers**, with pool
+  tokens that exercise them (`--hdr`, `--color=NEVER`, a second `--count`). I2, I3 and I7 now
+  cover `CMDIT_ERR_REPEATED`.
+- **Mutation-proven, 16/16:**
+  - the once check removed, or firing on the first occurrence;
+  - case folding removed, or wrong, in each of its two callers;
+  - alias lookup, help row, bash flag word and value-skip word removed;
+  - the refusal removed at each of its three sites;
+  - a lone `-` or `-5` refused;
+  - the new message.
+
+  One first-round survivor (the alias missing from bash's flag list) exposed an ambiguous
+  assertion, which now pins the exact line.
+- The bundle passes 694/694 on a 6.6.2 compiler.
+
+### Performance — not cleanly re-measured
+
+The only hot-path change is the flag entry growing 112 → 120 B, so `cmdit_new` zeroes 7,680 B
+instead of 7,168 (word-at-a-time since 1.3.0). The modifier checks are a bit test per applied
+flag. The interleaved 1.3.5-vs-1.3.6 run was taken while the host was saturated by unrelated
+compiles (load average ~17). Both versions ran ~2.5× their normal times with wide ranges, so
+it shows no regression beyond ±5% but measures nothing finer. Re-capture on an idle host
+before quoting 1.3.6 numbers; `docs/benchmarks.md` still holds the 1.3.2 capture.
+
 ## [1.3.5] - 2026-10-14
 
 **Help on a chosen stream, and hidden verbs.** This is the third pinned 1.3.x item. Five
