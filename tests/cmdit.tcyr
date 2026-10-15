@@ -140,6 +140,33 @@ fn contains(hay, needle): i64 {
     return 0;
 }
 
+# 1.3.7: a fresh cstr holding `a` then `b`, so an expected script line longer
+# than the lint's 120 columns can be written in two pieces and still matched whole.
+fn cat2(a, b): i64 {
+    var na = strlen(a);
+    var nb = strlen(b);
+    var r = alloc(na + nb + 1);
+    var i = 0;
+    while (i < na) { store8(r + i, load8(a + i)); i = i + 1; }
+    i = 0;
+    while (i < nb) { store8(r + na + i, load8(b + i)); i = i + 1; }
+    store8(r + na + nb, 0);
+    return r;
+}
+
+# 1.3.7: byte offset of the first `needle` in `hay`, or -1 — for asserting the
+# ORDER of two lines in a generated script.
+fn index_of(hay, needle): i64 {
+    var i = 0;
+    while (load8(hay + i) != 0) {
+        var k = 0;
+        while (load8(needle + k) != 0 && load8(hay + i + k) == load8(needle + k)) { k = k + 1; }
+        if (load8(needle + k) == 0) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
 # Run every test group against the pure parse/dispatch cores and the renderers.
 fn main() {
     alloc_init();
@@ -2118,6 +2145,239 @@ fn main() {
     assert(cmdit_error(rd) == CMDIT_ERR_MISSING_VALUE, "-> MISSING_VALUE from the dispatcher");
     assert(cmdit_reject_flag_value(0, 0) == 0 - 1 && cmdit_reject_flag_value(rfh, 99) == 0 - 1,
       "bad handle / idx -> -1");
+
+    # ══ 1.3.7: flag-table introspection + per-verb flags in completions ══════════
+    test_group("1.3.7 flag-table introspection: what was registered");
+    var fqh = cmdit_new("kriya");
+    assert(cmdit_flag_count(fqh) == 2, "a new handle holds the auto --help and --version");
+    assert(cstreq(cmdit_flag_long_at(fqh, 0), "help") == 1 && cstreq(cmdit_flag_long_at(fqh, 1), "version") == 1,
+      "as rows 0 and 1");
+    assert(cmdit_flag_short_at(fqh, 0) == 104 && cmdit_flag_short_at(fqh, 1) == 86, "-h and -V");
+    var fqn = cmdit_int(fqh, 110, "lines", 10, "line count");
+    var fqc = cmdit_enum(fqh, 0, "color", "auto", "auto|always|never", "when to color");
+    var fqo = cmdit_str(fqh, 111, "output", "out.txt", "output file");
+    cmdit_metavar(fqh, fqo, "FILE");
+    cmdit_long_alias(fqh, fqo, "out");
+    cmdit_required(fqh, fqo);
+    var fqr = cmdit_repeat(fqh, 72, "header", "a header");
+    var fqb = cmdit_bool(fqh, 113, "quiet", 0);
+    assert(cmdit_flag_count(fqh) == 7, "the count follows registration");
+    assert(cmdit_flag_type_at(fqh, fqn) == CMDIT_INT, "type: int");
+    assert(cmdit_flag_type_at(fqh, fqb) == CMDIT_BOOL, "type: bool");
+    assert(cmdit_flag_type_at(fqh, fqc) == CMDIT_STR && cmdit_flag_type_at(fqh, fqr) == CMDIT_STR,
+      "an enum and a repeat flag are CMDIT_STR");
+    assert(cmdit_flag_short_at(fqh, fqo) == 111, "short letter");
+    assert(cmdit_flag_short_at(fqh, fqc) == 0, "no short letter -> 0");
+    assert(cstreq(cmdit_flag_long_at(fqh, fqo), "output") == 1, "long name");
+    assert(cstreq(cmdit_flag_long_alias_at(fqh, fqo), "out") == 1, "second long name");
+    assert(cmdit_flag_long_alias_at(fqh, fqn) == 0, "no second long name -> 0");
+    assert(cstreq(cmdit_flag_help_at(fqh, fqn), "line count") == 1, "help");
+    assert(cmdit_flag_help_at(fqh, fqb) == 0, "no help -> 0");
+    assert(cmdit_flag_default_at(fqh, fqn) == 10, "an int default");
+    assert(cstreq(cmdit_flag_default_at(fqh, fqo), "out.txt") == 1, "a cstr default");
+    assert(cmdit_flag_default_at(fqh, fqb) == 0, "a bool's default is 0");
+    assert(cstreq(cmdit_flag_choices_at(fqh, fqc), "auto|always|never") == 1, "an enum's choices");
+    assert(cmdit_flag_choices_at(fqh, fqo) == 0, "not an enum -> 0");
+    assert(cstreq(cmdit_flag_metavar_at(fqh, fqo), "FILE") == 1, "metavar");
+    assert(cmdit_flag_metavar_at(fqh, fqn) == 0, "no metavar -> 0");
+    assert(cmdit_flag_is_required(fqh, fqo) == 1 && cmdit_flag_is_required(fqh, fqn) == 0, "required: 1 / 0");
+    assert(cmdit_flag_is_repeat(fqh, fqr) == 1 && cmdit_flag_is_repeat(fqh, fqo) == 0, "repeat: 1 / 0");
+    var fqv = alloc(64);
+    store64(fqv, "kriya"); store64(fqv + 8, "--lines"); store64(fqv + 16, "3"); store64(fqv + 24, "--out=x");
+    assert(cmdit_parse_argv(fqh, 4, fqv) == CMDIT_OK, "parse");
+    assert(cmdit_get_int(fqh, fqn) == 3 && cmdit_flag_default_at(fqh, fqn) == 10,
+      "after parse the default is still the registered one");
+    var fqids = alloc(24);
+    store64(fqids, 0 - 1); store64(fqids + 8, 7); store64(fqids + 16, 1099511627776);
+    var fqk = 0;
+    while (fqk < 3) {
+        var fqx = load64(fqids + fqk * 8);
+        assert(cmdit_flag_short_at(fqh, fqx) == 0 && cmdit_flag_long_at(fqh, fqx) == 0
+          && cmdit_flag_long_alias_at(fqh, fqx) == 0 && cmdit_flag_help_at(fqh, fqx) == 0
+          && cmdit_flag_default_at(fqh, fqx) == 0 && cmdit_flag_choices_at(fqh, fqx) == 0
+          && cmdit_flag_metavar_at(fqh, fqx) == 0 && cmdit_flag_is_required(fqh, fqx) == 0
+          && cmdit_flag_is_repeat(fqh, fqx) == 0, "a bad index -> 0 from every accessor");
+        assert(cmdit_flag_type_at(fqh, fqx) == 0 - 1, "and -1 from the type");
+        fqk = fqk + 1;
+    }
+    assert(cmdit_flag_count(0) == 0 && cmdit_flag_long_at(0, 0) == 0 && cmdit_flag_type_at(0, 0) == 0 - 1,
+      "a 0 handle");
+
+    test_group("1.3.7 flag lookup: the parser's own -x / --name resolution");
+    assert(cmdit_flag_find_short(fqh, 111) == fqo, "-o");
+    assert(cmdit_flag_find_short(fqh, 104) == 0, "-h is the auto help row");
+    assert(cmdit_flag_find_short(fqh, 122) == 0 - 1, "an unregistered letter -> -1");
+    assert(cmdit_flag_find_short(fqh, 0) == 0 - 1, "letter 0 -> -1, not the first flag that has none");
+    assert(cmdit_flag_find_short(0, 111) == 0 - 1, "a 0 handle -> -1");
+    assert(cmdit_flag_type_at(fqh, cmdit_flag_find_short(fqh, 110)) == CMDIT_INT,
+      "kriya's expander asks whether -n takes a value");
+    assert(cmdit_flag_type_at(fqh, cmdit_flag_find_short(fqh, 122)) == 0 - 1, "and an unknown letter answers -1");
+    assert(cmdit_flag_find_long(fqh, "output", 6) == fqo, "--output");
+    assert(cmdit_flag_find_long(fqh, "out", 3) == fqo, "the second long name finds the same flag");
+    assert(cmdit_flag_find_long(fqh, "output=x.txt", 6) == fqo, "the span of --output=x.txt up to the '='");
+    assert(cmdit_seen(fqh, cmdit_flag_find_long(fqh, "out", 3)) == 1, "the flag the parse set from --out=x");
+    assert(cmdit_flag_find_long(fqh, "outp", 4) == 0 - 1, "a prefix is not a match");
+    assert(cmdit_flag_find_long(fqh, "outputs", 7) == 0 - 1, "a longer name is not a match");
+    assert(cmdit_flag_find_long(fqh, "help", 4) == 0, "--help is row 0");
+    assert(cmdit_flag_find_long(fqh, "nope", 4) == 0 - 1, "an unknown name -> -1");
+    assert(cmdit_flag_find_long(fqh, "output", 0 - 1) == 0 - 1, "a negative length -> -1");
+    assert(cmdit_flag_find_long(fqh, 0, 6) == 0 - 1, "a null name -> -1");
+    assert(cmdit_flag_find_long(0, "output", 6) == 0 - 1, "a 0 handle -> -1");
+    var fqnb = alloc(16);                        # "ab\0cd\0": a name with bytes past its NUL
+    store8(fqnb, 97); store8(fqnb + 1, 98); store8(fqnb + 2, 0);
+    store8(fqnb + 3, 99); store8(fqnb + 4, 100); store8(fqnb + 5, 0);
+    var fqnh = cmdit_new("t");
+    var fqnf = cmdit_bool(fqnh, 0, fqnb, "");
+    assert(cmdit_flag_find_long(fqnh, fqnb, 2) == fqnf, "the span \"ab\" finds the flag named ab");
+    assert(cmdit_flag_find_long(fqnh, fqnb, 5) == 0 - 1,
+      "a span holding a NUL matches nothing, though the bytes past the name's NUL agree");
+
+    test_group("1.3.7 cmdit_verb_flags: a verb's own flag handle");
+    var vfa = cmdit_new("ark");
+    var vfai = cmdit_new("ark install");
+    assert(cmdit_verb_flags(vfa, 0, vfai) == 0 - 1, "no verb registered yet -> -1");
+    var vfi = cmdit_verb(vfa, "install", "Install");
+    var vfr = cmdit_verb(vfa, "remove", "Remove");
+    cmdit_verb_alias(vfa, vfr, "uninstall");
+    assert(cmdit_verb_flags_at(vfa, vfi) == 0, "nothing attached -> 0");
+    assert(cmdit_verb_flags(vfa, vfi, vfai) == vfi, "attach returns the verb's id");
+    assert(cmdit_verb_flags_at(vfa, vfi) == vfai, "and reads back");
+    var vfar = cmdit_new("ark remove");
+    assert(cmdit_verb_flags(vfa, 2, vfar) == vfr, "attaching on the alias row lands on its verb");
+    assert(cmdit_verb_flags_at(vfa, vfr) == vfar && cmdit_verb_flags_at(vfa, 2) == vfar,
+      "both rows read the verb's handle");
+    assert(cmdit_verb_flags(vfa, 3, vfai) == 0 - 1 && cmdit_verb_flags(vfa, 0 - 1, vfai) == 0 - 1
+      && cmdit_verb_flags(0, 0, vfai) == 0 - 1, "a bad id or handle -> -1");
+    assert(cmdit_verb_flags_at(vfa, 3) == 0 && cmdit_verb_flags_at(vfa, 0 - 1) == 0
+      && cmdit_verb_flags_at(0, 0) == 0, "a bad row -> 0");
+    assert(cmdit_verb_flags(vfa, vfi, 0) == vfi && cmdit_verb_flags_at(vfa, vfi) == 0, "0 detaches");
+    var vfpg = cmdit_bool(vfar, 0, "purge", "");
+    var vfv = alloc(64);
+    store64(vfv, "ark"); store64(vfv + 8, "uninstall"); store64(vfv + 16, "--purge"); store64(vfv + 24, "pkg");
+    assert(cmdit_dispatch_argv(vfa, 4, vfv) == CMDIT_OK, "dispatch");
+    var vfm = cmdit_verb_flags_at(vfa, cmdit_verb_matched(vfa));
+    assert(vfm == vfar, "the matched verb's handle, found after dispatch");
+    assert(cmdit_parse_argv(vfm, cmdit_verb_argc(vfa), cmdit_verb_argv(vfa)) == CMDIT_OK
+      && cmdit_get_bool(vfm, vfpg) == 1, "parses the verb's remainder");
+
+    test_group("1.3.7 per-verb flags in completions");
+    var pvc = cmdit_new("ark");
+    cmdit_bool(pvc, 0, "no-color", "");
+    cmdit_str(pvc, 114, "root", 0, "");
+    var pvci = cmdit_verb(pvc, "install", "Install");
+    var pvcr = cmdit_verb(pvc, "remove", "Remove");
+    cmdit_verb_alias(pvc, pvcr, "uninstall");
+    cmdit_verb_alias(pvc, pvcr, "rm!");
+    cmdit_verb(pvc, "info", "Info C:\\");
+    var pvcb = cmdit_verb(pvc, "bench", "");
+    cmdit_verb_hidden(pvc, pvcb);
+    var pvcx = cmdit_verb(pvc, "x;y", "");
+    var pvcih = cmdit_new("ark install");
+    cmdit_bool(pvcih, 102, "force", "Force it");
+    cmdit_str(pvcih, 103, "group", 0, "Install group");
+    cmdit_bool(pvcih, 121, 0, "Assume yes");
+    cmdit_verb_flags(pvc, pvci, pvcih);
+    var pvcrh = cmdit_new("ark remove");
+    var pvcp = cmdit_bool(pvcrh, 0, "purge", "Purge (it's gone) C:\\");
+    cmdit_long_alias(pvcrh, pvcp, "wipe");
+    cmdit_bool(pvcrh, 0, "a$(id)", "");
+    cmdit_verb_flags(pvc, pvcr, pvcrh);
+    var pvcbh = cmdit_new("ark bench");
+    cmdit_bool(pvcbh, 0, "secret", "");
+    cmdit_verb_flags(pvc, pvcb, pvcbh);
+    var pvcxh = cmdit_new("x");
+    cmdit_bool(pvcxh, 0, "zzz", "");
+    cmdit_verb_flags(pvc, pvcx, pvcxh);
+    var pvb = alloc(16384);
+    capture_completions(pvc, "bash", pvb, 16384);
+    assert(contains(pvb, "    local cur i w seen_verb=0 skip=0 verb=\n") == 1, "bash: declares $verb");
+    assert(contains(pvb, "        seen_verb=1; verb=\"$w\"; break\n") == 1, "bash: the walk keeps the verb");
+    assert(index_of(pvb, "    for (( i=1;") >= 0
+      && index_of(pvb, "    for (( i=1;") < index_of(pvb, "    if [[ \"$cur\" == -* ]]; then\n"),
+      "bash: the walk runs before the flag branch, which needs the verb");
+    assert(contains(pvb, "        case \"$verb\" in\n            install) flags=\"$flags --force --group\" ;;\n") == 1,
+      "bash: install's flags join the globals, without its own --help/--version");
+    assert(contains(pvb, "            remove|uninstall) flags=\"$flags --purge --wipe\" ;;\n        esac\n") == 1,
+      "bash: an alias selects the arm; the second long name is offered; unsafe names are dropped");
+    assert(contains(pvb, "secret") == 0, "bash: a hidden verb's flags are not offered");
+    assert(contains(pvb, "zzz") == 0, "bash: nor those of a verb whose name fails the whitelist");
+    assert(contains(pvb, "    local flags='--help --version --no-color --root'\n") == 1,
+      "bash: the global list is unchanged");
+    capture_completions(pvc, "zsh", pvb, 16384);
+    assert(contains(pvb, "    local i seen=0 skip=0 w verb\n") == 1, "zsh: declares verb");
+    assert(contains(pvb, "        seen=1; verb=$w; break\n") == 1, "zsh: the walk keeps the verb");
+    var pvk1 = cat2("    elif [[ $PREFIX == -* ]]; then\n        case $verb in\n",
+      "            install) compadd -- --help --version --force --group ;;\n");
+    assert(contains(pvb, pvk1) == 1,
+      "zsh: install's whole flag list on a word starting with -");
+    var pvk2 = cat2("            remove|uninstall) compadd -- --help --version --purge --wipe ;;\n",
+      "            *) _files ;;\n        esac\n    else\n        _files\n");
+    assert(contains(pvb, pvk2) == 1, "zsh: remove's arm, then files");
+    assert(contains(pvb, "secret") == 0 && contains(pvb, "zzz") == 0, "zsh: hidden and unsafe verbs get no arm");
+    capture_completions(pvc, "fish", pvb, 16384);
+    assert(contains(pvb, "complete -c ark -n '__fish_seen_subcommand_from install' -s f -l force -d 'Force it'\n") == 1,
+      "fish: a bool flag, short and long on one line");
+    var pvk3 = cat2("complete -c ark -n '__fish_seen_subcommand_from install'",
+      " -s g -l group -r -d 'Install group'\n");
+    assert(contains(pvb, pvk3) == 1,
+      "fish: a value flag carries -r");
+    assert(contains(pvb, "complete -c ark -n '__fish_seen_subcommand_from install' -s y -d 'Assume yes'\n") == 1,
+      "fish: a flag with only a short letter still gets its line");
+    var pvk4 = cat2("complete -c ark -n '__fish_seen_subcommand_from install'",
+      " -s h -l help -d 'show this help and exit'\n");
+    assert(contains(pvb, pvk4) == 1,
+      "fish: the verb's own --help, since fish completes no global flags");
+    var pvk5 = cat2("complete -c ark -n '__fish_seen_subcommand_from remove uninstall'",
+      " -l purge -d 'Purge (it'\\''s gone) C:\\\\'\n");
+    assert(contains(pvb, pvk5) == 1,
+      "fish: aliases select the line; an apostrophe and a trailing backslash stay quoted");
+    var pvk6 = cat2("complete -c ark -n '__fish_seen_subcommand_from remove uninstall'",
+      " -l wipe -d 'Purge (it'\\''s gone) C:\\\\'\n");
+    assert(contains(pvb, pvk6) == 1,
+      "fish: the second long name on its own line");
+    assert(contains(pvb, "-a 'info' -d 'Info C:\\\\'\n") == 1,
+      "fish: a verb's help ending in a backslash is escaped too");
+    assert(contains(pvb, "secret") == 0 && contains(pvb, "zzz") == 0 && contains(pvb, "a$(id)") == 0,
+      "fish: hidden verbs, unsafe verbs and unsafe flags are left out");
+
+    test_group("1.3.7 completions without per-verb flags keep the 1.3.6 script");
+    var pve = cmdit_new("ark");
+    cmdit_bool(pve, 0, "no-color", "");
+    cmdit_verb(pve, "install", "");
+    var pveh = cmdit_verb(pve, "bench", "");
+    cmdit_verb_hidden(pve, pveh);
+    cmdit_verb_flags(pve, pveh, pvcbh);
+    capture_completions(pve, "bash", pvb, 16384);
+    assert(contains(pvb, "    local cur i w seen_verb=0 skip=0\n") == 1 && contains(pvb, " verb=") == 0
+      && contains(pvb, "case") == 0, "bash: a handle attached only to a hidden verb changes nothing");
+    assert(index_of(pvb, "    if [[ \"$cur\" == -* ]]; then\n") >= 0
+      && index_of(pvb, "    if [[ \"$cur\" == -* ]]; then\n") < index_of(pvb, "    for (( i=1;"),
+      "bash: the 1.3.6 order, flag branch first");
+    capture_completions(pve, "zsh", pvb, 16384);
+    assert(contains(pvb, "    local i seen=0 skip=0 w\n") == 1 && contains(pvb, "verb=") == 0
+      && contains(pvb, "elif") == 0, "zsh: unchanged");
+    capture_completions(pve, "fish", pvb, 16384);
+    assert(contains(pvb, "__fish_seen_subcommand_from") == 0, "fish: unchanged");
+
+    test_group("1.3.7 per-verb completion edge cases");
+    var pvs = cmdit_new("sk");
+    cmdit_stop_at_positional(pvs, 1);
+    cmdit_bool(pvs, 0, "glob", "");
+    var pvsv = cmdit_verb(pvs, "run", "");
+    var pvsh = cmdit_new("sk run");
+    cmdit_bool(pvsh, 0, "dry", "");
+    cmdit_verb_flags(pvs, pvsv, pvsh);
+    capture_completions(pvs, "bash", pvb, 16384);
+    assert(contains(pvb, "            run) flags='--help --version --dry' ;;\n") == 1,
+      "bash, stop-at-positional: the verb's list replaces the globals, its --help included");
+    var pvo = cmdit_new("e");
+    var pvov = cmdit_verb(pvo, "go", "");
+    cmdit_verb_flags(pvo, pvov, cmdit_new("e go"));
+    capture_completions(pvo, "bash", pvb, 16384);
+    assert(contains(pvb, "        case \"$verb\" in\n        esac\n") == 1,
+      "bash: a verb with only the auto flags adds nothing to the globals, so it gets no arm");
+    capture_completions(pvo, "zsh", pvb, 16384);
+    assert(contains(pvb, "            go) compadd -- --help --version ;;\n") == 1, "zsh: it still offers them");
 
     return assert_summary();
 }

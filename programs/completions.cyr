@@ -31,6 +31,14 @@ fn main(): i64 {
     cmdit_verb(app, "ps", "List things");
     var v_rm = cmdit_verb(app, "rm", "Remove a thing");
     cmdit_verb_alias(app, v_rm, "remove");
+    # 1.3.7: each verb's own flags, from the handle the tool parses that verb with.
+    var run_h = cmdit_new("demo-app run");
+    cmdit_bool(run_h, 100, "detach", "run in the background");
+    cmdit_str(run_h, 110, "name", 0, "a name for the run");
+    cmdit_verb_flags(app, v_run, run_h);
+    var rm_h = cmdit_new("demo-app rm");
+    cmdit_bool(rm_h, 102, "force", "remove even if in use");
+    cmdit_verb_flags(app, v_rm, rm_h);
 
     # This program's own argv: one positional, the shell name.
     var h = cmdit_new("cmdit-completions");

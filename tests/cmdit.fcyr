@@ -25,6 +25,11 @@
 #   I8  (1.3.4) under cmdit_stop_at_positional, a clean parse's positionals are a
 #       contiguous suffix of argv, and a dispatch's remainder is exactly argv from
 #       the verb on — no global after the verb is applied
+#   I9  (1.3.7) for every argv token shaped `--name[=v]` or `-x`, cmdit_flag_find_long
+#       / _short give the first flag whose long name, second long name or letter is
+#       exactly that, as a brute-force walk of the cmdit_flag_*_at accessors finds
+#       it, or -1 when none is; and the accessors answer their sentinels past the
+#       table
 #
 # Every 50th argv is long (up to 400 tokens) and mostly positional-shaped, with
 # frequent -H, so the parse usually runs past the 128-positional and 64-repeat
@@ -44,14 +49,14 @@ var FZ_SEEDS = 16;         # seeds per run
 var FZ_ITERS = 400;        # iterations per seed
 var FZ_MAXTOK = 24;        # argv tokens after argv[0]
 var FZ_BIGTOK = 400;       # every 50th argv: past the 128 / 64 initial capacities
-var FZ_POOL_N = 52;
+var FZ_POOL_N = 54;
 
 var _fz_state = 0;
 var _fz_seed = 0;
 var _fz_iter = 0;
 var _fz_argc = 0;
 var _fz_argv = 0;
-var _fz_pool[416];         # FZ_POOL_N cstr pointers
+var _fz_pool[432];         # FZ_POOL_N cstr pointers
 
 # Write a NUL-terminated string to stdout / stderr.
 fn _fz_out(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
@@ -120,6 +125,7 @@ fn _fz_build_pool(): i64 {
     store64(t + 368, "--name=");        store64(t + 376, "--header");
     store64(t + 384, "--hdr");          store64(t + 392, "--hdr=z");          # 1.3.6: long alias
     store64(t + 400, "--color=NEVER");  store64(t + 408, "--count=3");      # nocase; once
+    store64(t + 416, "--nam");          store64(t + 424, "--headers=y");    # 1.3.7: near misses
     return 0;
 }
 
@@ -290,11 +296,73 @@ fn _fz_check_result(h, rc, nflags): i64 {
     return 0;
 }
 
+# 1 when the `len` bytes at `name` are exactly the cstr `s` (0 never matches).
+fn _fz_span_is(name, len, s): i64 {
+    if (s == 0) { return 0; }
+    if (strlen(s) != len) { return 0; }
+    var k = 0;
+    while (k < len) {
+        if (load8(name + k) != load8(s + k)) { return 0; }
+        k = k + 1;
+    }
+    return 1;
+}
+
+# I9 by brute force over the public accessors: the first flag whose long name or
+# second long name is the span, else -1.
+fn _fz_brute_long(h, name, len): i64 {
+    var n = cmdit_flag_count(h);
+    var i = 0;
+    while (i < n) {
+        if (_fz_span_is(name, len, cmdit_flag_long_at(h, i)) == 1) { return i; }
+        if (_fz_span_is(name, len, cmdit_flag_long_alias_at(h, i)) == 1) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# I9 by brute force: the first flag whose letter is `ch` (never 0), else -1.
+fn _fz_brute_short(h, ch): i64 {
+    if (ch == 0) { return 0 - 1; }
+    var n = cmdit_flag_count(h);
+    var i = 0;
+    while (i < n) {
+        if (cmdit_flag_short_at(h, i) == ch) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# I9: the lookups agree with the table for every flag-shaped argv token.
+fn _fz_check_lookup(h): i64 {
+    var i = 1;
+    while (i < _fz_argc) {
+        var t = load64(_fz_argv + i * 8);
+        if (load8(t) == 45 && load8(t + 1) == 45) {
+            var nm = t + 2;
+            var len = 0;
+            while (load8(nm + len) != 0 && load8(nm + len) != 61) { len = len + 1; }
+            _fz_check(cmdit_flag_find_long(h, nm, len) == _fz_brute_long(h, nm, len),
+              "I9 cmdit_flag_find_long disagrees with the table");
+        } elif (load8(t) == 45) {
+            _fz_check(cmdit_flag_find_short(h, load8(t + 1)) == _fz_brute_short(h, load8(t + 1)),
+              "I9 cmdit_flag_find_short disagrees with the table");
+        }
+        i = i + 1;
+    }
+    var n = cmdit_flag_count(h);
+    _fz_check(cmdit_flag_long_at(h, n) == 0 && cmdit_flag_short_at(h, n) == 0
+      && cmdit_flag_type_at(h, n) == 0 - 1 && cmdit_flag_type_at(h, 0 - 1) == 0 - 1,
+      "I9 an accessor answered past the table");
+    return 0;
+}
+
 # One single-command iteration: parse, then the I4-I6 checks and the finalize.
 fn _fz_cmd_iter(): i64 {
     var h = _fz_cmd_handle();
     var rc = cmdit_parse_argv(h, _fz_argc, _fz_argv);
     _fz_check_result(h, rc, FZ_NFLAGS);
+    _fz_check_lookup(h);                                          # I9 (1.3.7)
 
     var np = cmdit_positional_count(h);
     _fz_check(np >= 0 && np <= _fz_argc - 1, "I4 positional count outside argc");
@@ -375,6 +443,7 @@ fn _fz_verb_iter(): i64 {
     var h = _fz_verb_handle();
     var rc = cmdit_dispatch_argv(h, _fz_argc, _fz_argv);
     _fz_check_result(h, rc, 4);
+    _fz_check_lookup(h);                                          # I9 (1.3.7)
 
     var vm = cmdit_verb_matched(h);
     _fz_check(vm >= 0 - 1 && vm < cmdit_verb_count(h), "verb_matched outside the verb table");

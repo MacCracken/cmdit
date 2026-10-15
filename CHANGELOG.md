@@ -4,6 +4,122 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-10-14
+
+**Flag-table introspection, and each verb's own flags in the completion scripts.** This is the
+last pinned 1.3.x item. Everything is append-only: 15 functions (13 flag accessors and
+lookups, 2 for a verb's flag handle). The verb row grows 40 → 48 B. A handle that uses none of
+it produces byte-identical output, completion scripts included. One fix: fish completion
+quoting of a help text containing a backslash. **694 → 786 assertions**; 38 of 39 seeded
+reverts are caught, and the survivor is unobservable.
+
+### Added — flag-table introspection (kriya)
+
+kriya renders its own OPTIONS page and `--help=json`, and its pre-parse expander splits `-n5`
+only after asking whether `-n` takes a value. All three read the stdlib flags table's memory
+layout directly (`kriya_short_type`, `kriya_long_type`, `help.cyr`'s `_json_options`), which
+kriya's own comment calls a coupling. These accessors answer the same questions through a
+supported surface, reading the table the parser reads:
+
+| function | returns |
+|---|---|
+| `cmdit_flag_count(h)` | registered flags; `cmdit_new`'s auto `--help` and `--version` are rows 0 and 1 |
+| `cmdit_flag_short_at` / `_long_at` / `_long_alias_at` / `_help_at` / `_metavar_at` / `_choices_at` `(h, i)` | the registered field, or 0 |
+| `cmdit_flag_type_at(h, i)` | `CMDIT_BOOL` / `INT` / `STR`, or -1 for a bad index; an enum or repeat flag is `STR` |
+| `cmdit_flag_default_at(h, i)` | the registered default (an int or a cstr), not the parsed value |
+| `cmdit_flag_is_required` / `cmdit_flag_is_repeat` `(h, i)` | 1 or 0 |
+| `cmdit_flag_find_short(h, ch)` / `cmdit_flag_find_long(h, name, len)` | the index the parser resolves `-x` / `--name` to, or -1 |
+
+- **The set is what `cmdit_help_flags` prints**, so a custom renderer can match it. Env names,
+  ranges and the 1.3.6 bits are not exposed, because nothing asked for them. The two
+  predicates stand in for a raw attribute accessor because ADR-0003 keeps the `CMDIT_ATTR_*`
+  bitfield internal.
+- **`cmdit_flag_find_long` takes a span.** kriya passes the bytes of `--name=value` up to the
+  `=`, with no copy. It is the parser's own lookup, second long names included, and the first
+  registration wins as it does in the parser. A span holding a NUL matches nothing: the shared
+  compare checks `len` bytes before it checks the registered name's end, so it would read past
+  a shorter name.
+
+### Added — `cmdit_verb_flags(h, verb_id, vh)` / `cmdit_verb_flags_at(h, i)` (ark)
+
+ark's `completions/ark.bash`, `.zsh` and `.fish` hand-write each verb's flags: `install`
+`--force --group`, `remove|uninstall` `--purge`, `search` `--source`, `list|ls` `--marketplace
+--system --flutter`. A verb tool already builds one handle per verb to re-parse
+`cmdit_verb_argv`. `cmdit_verb_flags` attaches that handle to its verb, and the completion
+scripts read the verb's flags from it. **Dispatch does not change**: cmdit never parses with
+the attached handle. `cmdit_verb_flags_at` reads it back, so a tool can build its verb handles
+up front and take the matched one after dispatch with `cmdit_verb_flags_at(h,
+cmdit_verb_matched(h))`. An alias row resolves to its verb, and `vh` = 0 detaches.
+
+Once a verb with an attached handle has been typed:
+
+- **bash** adds the verb's long flags to the global list (`install) flags="$flags --force
+  --group" ;;`). Under `cmdit_stop_at_positional`, where globals are not applied after the
+  verb, the verb's list replaces the global one and keeps its own `--help` / `--version`. The
+  walk that finds the verb now runs before the flag branch, since the flag list depends on it.
+- **zsh** offers the verb handle's whole list through `compadd` for a word starting with `-`,
+  and files otherwise.
+- **fish** gets one `complete` line per flag, conditioned on `__fish_seen_subcommand_from
+  <verb> <aliases>`: short and long name together, `-r` for a value flag, `-d` with the help.
+
+An alias selects its verb's arm, a hidden verb gets none, and every name still passes the
+`[A-Za-z0-9_.-]` whitelist, so an unsafe verb or flag name is dropped as before. One level
+only: verbs registered on the attached handle are not completed. zsh and fish still complete
+no *global* flags.
+
+**Byte-identical without it.** When no visible verb has a handle attached, all three scripts
+are byte for byte the 1.3.6 ones. A fixture's three scripts were diffed against 1.3.6's
+output, and the suite pins the 1.3.6 layout. A tool that regenerates checked-in completions
+sees no churn.
+
+### Fixed — fish completion quoting
+
+fish reads two escapes inside single quotes, `\'` and `\\`; bash and zsh read none. The fish
+emitter used the POSIX quoter for a verb's `-d` help, so a help text ending in a backslash
+(`-d 'Install C:\'`) turned the closing quote into a literal one. From there the quoting was
+off by one for the rest of the script, and the next verb's help text was read as fish code.
+A backslash is now doubled. The text is the program's own help, not argv, so it took a tool
+author writing such a string; verb names were never affected, being whitelisted. Help without
+a backslash is emitted as before. fish is not installed on the build host: this follows fish's
+documented quoting rules, and the suite pins the generated bytes.
+
+### Tests
+
+- **+92 assertions (694 → 786):**
+  - every accessor on each flag shape, plus bad indices and handles;
+  - the lookups: second long names, `=` spans, prefixes, a NUL in the span, and the
+    expander's own question;
+  - attaching a verb handle, reading it back through an alias row, detaching it, and a
+    dispatch round trip;
+  - the exact per-verb lines in each shell, stop mode, a verb with only the auto flags, and
+    the unchanged scripts without any attachment.
+- **Fuzz invariant I9.** For every flag-shaped argv token, `cmdit_flag_find_long` / `_short`
+  must agree with a brute-force walk of the accessors, and the accessors must answer their
+  sentinels past the table. The pool grows 52 → 54 with near misses (`--nam`, `--headers=y`).
+  Three seeded lookup bugs are each caught by I9 alone.
+- **Real shells.** The generated bash script, sourced with simulated `COMP_WORDS`, gives the
+  right completions in 14 cases:
+  - globals before the verb, the verb's flags after it, an alias;
+  - a hidden verb, and a verb with no handle;
+  - a value flag that swallows the would-be verb;
+  - stop mode.
+
+  zsh, with its completion builtins stubbed, picks the right arm in 8 cases. `bash -n` and
+  `zsh -n` pass on the demo program's scripts.
+- **Mutation, 38/39.** The first round's one real survivor (a flag with only a short letter
+  losing its fish line) was closed with a fixture flag. The remaining survivor is the explicit
+  zero of the new row field, which the table's zeroing at allocation makes unobservable.
+- The bundle passes 786/786 on a 6.6.2 compiler.
+
+### Performance — measured on an idle host
+
+Interleaved 1.3.6 against 1.3.7, 11 runs each, load average ~1.3. Every bench is within ±4%
+except `verb_new_floor`, **3.13 → 3.36 µs (+7%)**. The verb table grows 5,120 → 6,144 B, and
+its share (`verb_new_floor − cmdit_new_floor`) went 1.11 → 1.31 µs, the 20% the table grew.
+A verb tool pays it once per process. Dispatch is unchanged (176 → 177 ns before the verb,
+246 → 248 after). The new `flag_find_long` bench reads 80 ns. `docs/benchmarks.md` now holds
+this capture in place of 1.3.2's.
+
 ## [1.3.6] - 2026-10-14
 
 **Four small modifiers, each asked for by one tool in the adoption survey.** This is the

@@ -76,6 +76,12 @@ an in-core verb tree.**
   `--name=--verbose` is unambiguous. Also in 1.3.2: only positionals count toward a
   trailing-verbatim threshold, and `tool add --help` skips the global required check.
   See the [2026-10-14 audit](../audit/2026-10-14-audit.md).
+- **1.3.7** — the verb row grows 40 → 48 B for `+40`, a handle attached by
+  `cmdit_verb_flags`: the verb's own handle, the one the caller re-parses the remainder with.
+  Only the completion scripts read it, so a verb's flags are completed from the same table
+  that parses them, not from a second hand-kept word list (ark's). Dispatch is unchanged and
+  still identify-and-return: cmdit never parses with the attached handle, and re-entry stays
+  the caller's. It is one level deep, which is not the rejected in-core tree below.
 
 ## Alternatives considered
 

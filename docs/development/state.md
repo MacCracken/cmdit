@@ -5,6 +5,19 @@
 
 ## Version
 
+**1.3.7** — built 2026-10-14. **Flag-table introspection, and per-verb flags in completions**,
+the last pinned 1.3.x item.
+
+- `cmdit_flag_*_at` accessors, plus `cmdit_flag_find_short` / `_find_long` (the parser's own
+  lookup, span-based), for kriya's help renderer, `--help=json` and pre-parse expander.
+- `cmdit_verb_flags(h, id, vh)` / `cmdit_verb_flags_at`: attach a verb's own handle. All three
+  completion scripts then offer that verb's flags after it (ark). Without an attachment the
+  scripts are byte-identical to 1.3.6.
+- Fixed: fish quoting of a help text containing a backslash.
+
+Verb row 40 → 48 B (`verb_new_floor` +0.2 µs, once per process). **694 → 786 assertions**,
+38/39 seeded reverts caught (the survivor is unobservable), fuzz invariant I9.
+
 **1.3.6** — built 2026-10-14. **Four small modifiers**, one per surveyed tool:
 
 - `cmdit_once` (cyim): a second occurrence is the new `CMDIT_ERR_REPEATED` (14);
@@ -174,9 +187,10 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   materialize bridge / auto help+version / exit constants / raw-argv escape; 0.2.0
   flag modifiers; 0.3.0 verb dispatch; 1.0.0 `help_short`/`version_short` + `metavar`
   + `require_positionals_max`/`_exact`; 1.1.0 `help_flags`; 1.2.0 verb introspection +
-  `cmdit_completions`; 1.2.2 `verb_trailing_after`). Entry struct 112 B, ctx **168 B**
-  (append-only; 160 → 168 at 1.2.2 for the trailing-list slot);
-  verbs are a separate lazy-allocated table. The pure `cmdit_parse_argv` core is
+  `cmdit_completions`; 1.2.2 `verb_trailing_after`; the 1.3.x survey items through 1.3.7's
+  flag introspection and per-verb completion flags). Entry **120 B**, ctx **192 B**, verb
+  row **48 B**, all append-only (the layout comment at the top of the source has every
+  offset); verbs are a separate lazy-allocated table. The pure `cmdit_parse_argv` core is
   `/proc`- and env-free; `cmdit_dispatch_argv` is its pure verb-dispatch sibling;
   env + required run in `cmdit_finalize` (chained by `cmdit_parse`/`cmdit_dispatch`).
 - `programs/smoke.cyr` — single-command demo (enum/range/repeat/env + flag-named errors).
@@ -190,7 +204,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **694/694**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+- `tests/cmdit.tcyr` — **786/786**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
   `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
@@ -199,16 +213,18 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   missing-value, `CMDIT_FLAGS_MAX`/`CMDIT_VERB_MAX` cap returns, `cmdit_new(0)`
   argv[0] adoption, and the C5/C3/C1 groups (`help_short`/`version_short` remap+disable,
   metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
-- `tests/cmdit.bcyr` — **8 real benchmarks** (`cmdit_new` floor, register/parse
-  subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate, and the
-  1.3.2 `verb_new_floor`);
+- `tests/cmdit.bcyr` — **9 real benchmarks** (`cmdit_new` floor, register/parse
+  subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate, the
+  1.3.2 `verb_new_floor`, and the 1.3.7 `flag_find_long`);
   see [`benchmarks.md`](../benchmarks.md).
 - `tests/cmdit.fcyr` — **real fuzz harness** (1.3.0; it was a stub before). 16 seeds × 400 argvs
-  through `cmdit_parse_argv` and `cmdit_dispatch_argv`, mixing a 48-token pool with random bytes
-  and checking six contract invariants (I1–I6 in its header). Since 1.3.1, every 50th argv is
-  long (up to 400 tokens), so the growth paths past 128 / 64 are fuzzed too. Mutation-proven: 8
-  of 9 seeded source bugs caught. The survivor (the remainder slice's NULL terminator) is
-  unobservable because fresh `alloc` memory is already zero. ~0.7 s.
+  through `cmdit_parse_argv` and `cmdit_dispatch_argv`, mixing a 54-token pool with random bytes
+  and checking nine contract invariants (I1–I9 in its header; I7 since 1.3.3, I8 since 1.3.4,
+  I9, the flag lookups against a brute-force walk of the accessors, since 1.3.7). Since 1.3.1,
+  every 50th argv is long (up to 400 tokens), so the growth paths past 128 / 64 are fuzzed
+  too. Mutation-proven at 1.3.0: 8 of 9 seeded source bugs caught. The survivor (the remainder
+  slice's NULL terminator) is unobservable because fresh `alloc` memory is already zero. I9
+  alone catches each of three seeded lookup bugs (1.3.7). ~0.6 s.
 - **Poison gates:** `cyrius fuzz --poison=ab` and `CYRIUS_POISON=1 cyrius test` both pass, so
   there is no redzone overwrite in cmdit. Neither can observe `cmdit_new`'s zeroing loop:
   poison fills only the redzones.
@@ -249,13 +265,17 @@ None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
 
 ## Next
 
-v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.3–1.3.6
-shipped four of the pinned survey gaps; 1.3.7 (flag-table introspection) remains.
+v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.1 and
+1.3.3–1.3.7 shipped every gap the 2026-10-14 survey pinned. Next is **1.4.0, a refactor and
+optimization sweep** with no new surface and byte-identical output
+([`roadmap.md`](roadmap.md#140--refactor-and-optimization-sweep-planned)).
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.3.6 are recommended.** They bring the misparse fixes, the speed
-  work, the audit repairs and the token-naming error lines. None of the six breaks.
+- **Consumer re-pins to 1.3.7 are recommended.** They bring the misparse fixes, the speed
+  work, the audit repairs and the token-naming error lines. None of the six breaks. stiva,
+  the one consumer that generates completions, gets the same scripts as 1.3.6 until it
+  attaches verb handles, apart from the fish fix for a verb help ending in a backslash.
   - stiva, ifran, commandress and dig call `cmdit_print_error`, so their stderr lines now
     name the token; no test of theirs pins the old text.
   - kii and anuenue's `cmdit_error` switches print their generic line for
@@ -268,8 +288,14 @@ Open, in rough order:
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
   is a site-by-site map from that repo's CLI code to cmdit calls. shakti, kriya, cyim and
   bannermanor are blocked on cmdit gaps; klug is not worth migrating.
-- **Pinned for 1.3.x** ([`roadmap.md`](roadmap.md#pinned-for-13x)): 1.3.7 flag-table
-  introspection, the last.
+- **1.4.0** ([`roadmap.md`](roadmap.md#140--refactor-and-optimization-sweep-planned)): R1–R4
+  refactors (named offsets, one token-to-flag path, shared guards, a split test suite), then
+  O1–O4 optimizations (buffered output, lazy verb table, maybe a lazy entry table, faster
+  long-name lookup). The baseline is the 1.3.7 idle-host capture in
+  [`../benchmarks.md`](../benchmarks.md).
+- **kriya and ark can drop their workarounds.** kriya's expander and help renderer read the
+  stdlib flags layout directly; `cmdit_flag_*` replaces that. ark's hand-written per-verb
+  completion lists can come from `cmdit_verb_flags`. Their adoption notes predate this.
 - **Adoption notes predate 1.3.3 and 1.3.4.** They still list the token gap as open (shakti,
   attn11, owl, chakshu, hapi, phylax, agnova) and stop-at-positional as a blocker (shakti,
   kriya). shakti's note calls it blocked, but neither of its two cmdit blockers remains. Left

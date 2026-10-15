@@ -133,9 +133,9 @@ fn main(): i64 {
     bench_report(b7);
 
     # 8. verb_new_floor — a verb tool's construction floor: cmdit_new + the first
-    #    cmdit_verb, which allocates and zeroes the 4096-byte verb table (1.3.2:
-    #    word-at-a-time; it was a byte loop costing ~5.6 us). Subtract #1 for the
-    #    verb table alone.
+    #    cmdit_verb, which allocates and zeroes the verb table, 128 rows of 48 B =
+    #    6144 bytes since 1.3.7 (1.3.2: word-at-a-time; it was a byte loop costing
+    #    ~5.6 us). Subtract #1 for the verb table alone.
     var b8 = bench_new("verb_new_floor");
     bench_batch_start(b8);
     var i8 = 0;
@@ -146,6 +146,22 @@ fn main(): i64 {
     }
     bench_batch_stop(b8, BOUND);
     bench_report(b8);
+
+    # 9. flag_find_long — 1.3.7: cmdit_flag_find_long on the span of "color=never"
+    #    up to the '=', the per-token question kriya's pre-parse expander asks. The
+    #    flag is the last of the six on the handle, so this is the linear scan's
+    #    worst case at that size, plus the span's NUL check. No per-iter alloc.
+    var hf = cmdit_new("b");
+    cmdit_bool(hf, 0, "loud", "");
+    cmdit_int(hf, 99, "count", 1, "");
+    cmdit_str(hf, 110, "name", 0, "");
+    cmdit_enum(hf, 0, "color", "auto", "auto|always|never", "");
+    var b9 = bench_new("flag_find_long");
+    bench_batch_start(b9);
+    var i9 = 0;
+    while (i9 < HOT) { cmdit_flag_find_long(hf, "color=never", 5); i9 = i9 + 1; }
+    bench_batch_stop(b9, HOT);
+    bench_report(b9);
 
     return 0;
 }

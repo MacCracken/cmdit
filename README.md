@@ -5,7 +5,7 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.3.6 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.3.7 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
 faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`); 1.3.2 is an
@@ -13,7 +13,8 @@ audit sweep with a completion-script security fix; 1.3.3 adds `cmdit_err_token` 
 `cmdit_err_value` and error lines that name the offending text; 1.3.4 adds POSIX
 `cmdit_stop_at_positional`; 1.3.5 adds help on a chosen stream and hidden verbs; 1.3.6 adds
 four small modifiers (once-only, case-insensitive choices, a second long name, refusing a
-flag-shaped value). **1.2.4 is a security release** — the completion generator interpolated
+flag-shaped value); 1.3.7 adds flag-table introspection and per-verb flags in completions.
+**1.2.4 is a security release** — the completion generator interpolated
 the program name, which on the `cmdit_new(0)` path comes from `argv[0]`, raw into the
 scripts it emits; it also closes three memory-safety/contract defects. No API change.
 **Consumers on any earlier version that generate completions should update.**
@@ -111,6 +112,9 @@ if (v == 0) {
 - **`cmdit_verb_hidden(h, id)`** keeps a verb dispatchable but out of help, the
   unknown-command list and completions (1.3.5); `cmdit_verb_is_hidden(h, i)` for listings
   built from the introspection accessors.
+- **`cmdit_verb_flags(h, id, vh)`** attaches the verb's own handle (1.3.7). The completion
+  scripts then offer that verb's flags once it is typed, and `cmdit_verb_flags_at(h,
+  cmdit_verb_matched(h))` hands it back after dispatch. cmdit never parses with it.
 - **`cmdit_stop_at_positional(h, 1)`** on a verb handle makes the verb the first operand:
   globals apply only before it, and a global after it goes to the verb's scope (1.3.4).
 - **One-pass caveats:** a global value flag right before the verb can take the verb as its
@@ -167,6 +171,15 @@ constants, not API (do not depend on their values).
   `cmdit_seen`, `cmdit_repeat_count` / `cmdit_repeat_get`, `cmdit_positional` /
   `cmdit_positional_count`, `cmdit_verb_matched` / `cmdit_verb_argc` /
   `cmdit_verb_argv`, `cmdit_raw_argv` / `cmdit_raw_argc`, `cmdit_basename`.
+- **Introspect** (what was registered, by index): verbs (1.2.0) `cmdit_verb_count` /
+  `cmdit_verb_name_at` / `_help_at` / `_canonical_at` / `cmdit_verb_is_alias` /
+  `cmdit_verb_is_hidden` (1.3.5) / `cmdit_verb_flags_at` (1.3.7); flags (1.3.7)
+  `cmdit_flag_count` / `cmdit_flag_short_at` / `_long_at` / `_long_alias_at` / `_type_at` /
+  `_help_at` / `_default_at` / `_choices_at` / `_metavar_at` / `cmdit_flag_is_required` /
+  `cmdit_flag_is_repeat`, and `cmdit_flag_find_short(h, ch)` /
+  `cmdit_flag_find_long(h, name, len)`, the parser's own `-x` / `--name` lookup (index or
+  -1). For tools that render their own help, emit `--help=json`, or scan argv before cmdit
+  parses it.
 - **Validate / errors:** `cmdit_require_positionals` / `_max` / `_exact`,
   `cmdit_error` (last `CmditErr`, `CMDIT_ERR_NONE` 0 … `CMDIT_ERR_REPEATED` 14),
   `cmdit_err_flag` (offending flag index), `cmdit_err_token` (the argv token behind the
@@ -176,7 +189,8 @@ constants, not API (do not depend on their values).
   for tools framing their own help) / `cmdit_verbs_help`, `cmdit_version`, `cmdit_print_error`.
   The three help renderers write stderr; `cmdit_help_fd` / `cmdit_help_flags_fd` /
   `cmdit_verbs_help_fd(h, fd)` take the stream (1.3.5) — pass 1 for GNU-style `--help` on
-  stdout.
+  stdout. `cmdit_completions(h, shell)` writes a bash, zsh or fish completion script to
+  stdout (1.2.0; per-verb flags 1.3.7).
 - **Result codes:** `CMDIT_OK` / `CMDIT_HELP` / `CMDIT_VERSION` / `CMDIT_RESULT_ERR`.
   **Exit codes:** `CMDIT_EXIT_OK` (0) / `CMDIT_EXIT_RUN` (1) / `CMDIT_EXIT_USAGE` (2).
   Note the two namespaces collide by value on purpose (`CMDIT_OK` = `CMDIT_EXIT_OK`
@@ -274,6 +288,10 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
 - **1.3.6** — `cmdit_once`, `cmdit_enum_nocase`, `cmdit_long_alias`, `cmdit_reject_flag_value`
   (cyim, phylax, ark, hapi) and `CMDIT_ERR_REPEATED` (14). **694/694 tests**, 16/16
   mutation-proven.
+- **1.3.7** — flag-table introspection, `cmdit_flag_*_at` plus `cmdit_flag_find_short` /
+  `_find_long` (kriya), and `cmdit_verb_flags`, which puts each verb's own flags in all three
+  completion scripts (ark). Fixes fish quoting of a help text containing a backslash.
+  **786/786 tests**, 38/39 seeded reverts caught (the survivor is unobservable).
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -282,6 +300,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (694/694)
+cyrius test                                          # run tests/*.tcyr  (786/786)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```
