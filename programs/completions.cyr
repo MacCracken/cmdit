@@ -9,7 +9,7 @@
 # The point of the exercise: the script is a projection of the parser's own verb
 # table, so it cannot drift from the CLI the way a hand-maintained list does.
 #
-# stdlib-only project, so the entry includes its stdlib explicitly (like smoke).
+# The entry includes its stdlib explicitly, like smoke (see the note there).
 include "lib/vec.cyr"
 include "lib/args.cyr"
 include "lib/string.cyr"
@@ -17,8 +17,10 @@ include "lib/fmt.cyr"
 include "lib/io.cyr"
 include "src/cmdit.cyr"
 
+# Write a NUL-terminated string to stderr (no newline).
 fn eputs(s): i64 { syscall(1, 2, s, strlen(s)); return 0; }
 
+# Emit the bash/zsh/fish completion script named by argv[1] for a demo verb set.
 fn main(): i64 {
     # The CLI whose completions we generate. An apostrophe and a dash are in
     # there deliberately — both have bitten generated shell before.

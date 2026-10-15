@@ -5,9 +5,10 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.2.6 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.3.0 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
-command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes. **1.2.4 is a security release** — the completion generator
+command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
+faster. **1.2.4 is a security release** — the completion generator
 interpolated the program name, which on the `cmdit_new(0)` path comes from `argv[0]`,
 raw into the scripts it emits; it also closes three memory-safety/contract defects. No
 API change. **Consumers on any earlier version that generate completions should update.**
@@ -121,7 +122,9 @@ constants, not API (do not depend on their values).
 
 - **Lifecycle:** `cmdit_new(prog)` → handle; `cmdit_argv(h)` (materialize bridge),
   `cmdit_parse(h)` / `cmdit_parse_argv(h, argc, argv)` (pure), `cmdit_finalize(h)`,
-  `cmdit_dispatch(h)` / `cmdit_dispatch_argv(h, argc, argv)` (pure).
+  `cmdit_dispatch(h)` / `cmdit_dispatch_argv(h, argc, argv)` (pure). A handle is
+  **single-parse**: build a fresh one per argv. A second parse on the same handle resets
+  only the error fields (1.2.4); positionals, flag values and the matched verb carry over.
 - **Register:** `cmdit_bool` / `cmdit_int` / `cmdit_str` / `cmdit_enum` /
   `cmdit_repeat`; modifiers `cmdit_required` / `cmdit_range` / `cmdit_env` /
   `cmdit_metavar`; verbs `cmdit_verb` / `cmdit_verb_alias`; auto-flag config
@@ -203,6 +206,10 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
 - **1.2.5** — maintenance: toolchain pin 6.6.2, no source change.
 - **1.2.6** — maintenance: toolchain pin 6.6.20 + full vendored stdlib refresh; `dist/`
   now carries a compile-verified `# Requires` block and a 4-leaf `cmdit.deps` sidecar.
+- **1.3.0** — toolchain pin 6.7.9; `cmdit_new` **~6× faster** (1.97 µs, was ~11.5) by zeroing
+  the entry table a word at a time; `cmdit_argv` linear on Linux (20,000 args: 2.6 s → 11 ms);
+  **357/357 tests**; a real fuzz harness over both parse cores (the old one
+  was a stub); benchmarks re-captured with a 1.0.0 → 1.3.0 bisect. No API change.
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -211,6 +218,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (345/345)
+cyrius test                                          # run tests/*.tcyr  (357/357)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

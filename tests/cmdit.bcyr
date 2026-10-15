@@ -1,8 +1,7 @@
 # cmdit benchmarks — characterizes the real per-invocation cost of the parser.
 # Build/run:  cyrius build tests/cmdit.bcyr build/cmdit-bench && ./build/cmdit-bench
 #
-# cmdit is a stdlib-only project (no external [deps.X]), so `cyrius build` does NOT
-# auto-prepend stdlib — the entry includes what it uses explicitly (like smoke/test).
+# The entry includes the stdlib it uses explicitly, like smoke (see the note there).
 #
 # Methodology (see docs/benchmarks.md):
 #   parse-loop cost  = parse_argv_mixed.avg - setup_baseline.avg
@@ -23,6 +22,7 @@ var BOUND = 4096;           # alloc-heavy bench iters (fresh ~7.8KB handle each)
 var HOT = 1000000;          # pure-leaf bench iters (no per-iter alloc)
 var DISP = 200000;          # dispatch bench iters (~40B remainder alloc each)
 
+# Run the cmdit micro-benchmarks (see docs/benchmarks.md for the methodology).
 fn main(): i64 {
     alloc_init();
 

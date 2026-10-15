@@ -8,7 +8,7 @@
 #        ./build/cmdit-verbs bogus                          # unknown command + list
 #        ./build/cmdit-verbs --help                         # global help + command list
 #
-# stdlib-only project, so the entry includes its stdlib explicitly (like smoke).
+# The entry includes its stdlib explicitly, like smoke (see the note there).
 include "lib/vec.cyr"
 include "lib/args.cyr"
 include "lib/string.cyr"
@@ -17,6 +17,7 @@ include "lib/io.cyr"
 include "src/cmdit.cyr"
 
 fn _putc(ch): i64 { var b[8]; store8(&b, ch); sys_write(1, &b, 1); return 0; }
+# Write a NUL-terminated string to stdout (no newline).
 fn puts(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
 
 # verb ids (cmdit_verb returns these in registration order)
@@ -53,6 +54,7 @@ fn run_remove(h): i64 {
     return CMDIT_EXIT_OK;
 }
 
+# Register the global flags + verbs, dispatch the real argv, run the matched verb.
 fn main(): i64 {
     var h = cmdit_new("verbs");
     cmdit_bool(h, 0, "verbose", "global: be verbose");              # a global flag (before OR after verb)

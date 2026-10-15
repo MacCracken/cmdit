@@ -1,14 +1,371 @@
-# cmdit fuzz harness
+# cmdit fuzz harness — seeded random argv through both pure cores.
+#
+# Targets: cmdit_parse_argv (single-command) and cmdit_dispatch_argv (verbs),
+# then cmdit_finalize / cmdit_require_positionals_max / cmdit_parse_verb on top.
+# Each iteration builds an argv from a token pool (real flags, values, verbs,
+# `--`, bundled/attached shorts, garbage) mixed with random byte strings, and
+# checks the documented contract rather than any particular outcome:
+#
+#   I1  the result is one of OK / HELP / VERSION / RESULT_ERR
+#   I2  cmdit_error is a CmditErr, and it is NONE exactly when the parse is clean
+#   I3  cmdit_err_flag names a registered flag for MISSING_VALUE / BAD_INT /
+#       BAD_ENUM / OUT_OF_RANGE / REQUIRED_MISSING, and is -1 for UNKNOWN /
+#       BUNDLED / UNKNOWN_VERB
+#   I4  every positional and every remainder-slice token is one of the argv
+#       tokens (pointer identity), and the counts fit inside argc
+#   I5  on a clean parse the modifiers hold: the enum index is a choice, the
+#       ranged int is inside its bounds, the repeat list is dense
+#   I6  a fresh handle gives the same answer twice, and a handle whose previous
+#       parse failed gives the same error as a fresh one (the 1.2.4 err_entry
+#       leak class). Handles are otherwise single-parse, so only the error trio
+#       is compared on the reused one.
+#
+# alloc_reset() between iterations keeps memory flat (cmdit_new is ~7.8 KB of a
+# free-less bump allocator), so the iteration count is not memory-bound.
+# A failure prints the invariant, seed, iteration and argv, then exits 1.
+include "lib/vec.cyr"      # vec_get (transitively referenced by string/alloc)
+include "lib/args.cyr"     # pulls syscalls + alloc
+include "lib/string.cyr"   # strlen
+include "lib/fmt.cyr"      # fmt_int
+include "lib/io.cyr"       # getenv (cmdit_finalize)
+include "src/cmdit.cyr"
 
-fn fuzz_main(data, len) {
-    if (len == 0) { return 0; }
+var FZ_SEEDS = 16;         # seeds per run
+var FZ_ITERS = 400;        # iterations per seed
+var FZ_MAXTOK = 24;        # argv tokens after argv[0]
+var FZ_POOL_N = 48;
+
+var _fz_state = 0;
+var _fz_seed = 0;
+var _fz_iter = 0;
+var _fz_argc = 0;
+var _fz_argv = 0;
+var _fz_pool[384];         # FZ_POOL_N cstr pointers
+
+# Write a NUL-terminated string to stdout / stderr.
+fn _fz_out(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
+fn _fz_err(s): i64 { syscall(1, 2, s, strlen(s)); return 0; }
+
+# Next pseudo-random value in [0, 2^31) (64-bit LCG, high bits).
+fn _fz_next(): i64 {
+    _fz_state = _fz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fz_state >> 33) & 2147483647;
+}
+
+# Report a broken invariant with enough context to replay it, then exit 1.
+fn _fz_fail(what): i64 {
+    _fz_err("fuzz: FAILED ");
+    _fz_err(what);
+    _fz_err("\n  seed ");
+    fmt_int_fd(2, _fz_seed);
+    _fz_err(" iter ");
+    fmt_int_fd(2, _fz_iter);
+    _fz_err("\n  argv:");
+    var i = 0;
+    while (i < _fz_argc) {
+        _fz_err(" [");
+        _fz_err(load64(_fz_argv + i * 8));
+        _fz_err("]");
+        i = i + 1;
+    }
+    _fz_err("\n");
+    syscall(60, 1);
     return 0;
 }
 
-fn main() {
+# Fail with `what` unless `cond` holds.
+fn _fz_check(cond, what): i64 {
+    if (cond == 0) { _fz_fail(what); }
+    return 0;
+}
+
+# The fixed token pool: every registered flag in both spellings, good and bad
+# values, verbs and an alias, the `--` terminator, and the shapes cmdit rejects.
+fn _fz_build_pool(): i64 {
+    var t = &_fz_pool;
+    store64(t + 0, "-h");               store64(t + 8, "--help");
+    store64(t + 16, "-V");              store64(t + 24, "--version");
+    store64(t + 32, "-n");              store64(t + 40, "--name");
+    store64(t + 48, "--name=bob");      store64(t + 56, "-c");
+    store64(t + 64, "--count");         store64(t + 72, "--count=5");
+    store64(t + 80, "--count=0");       store64(t + 88, "--count=11");
+    store64(t + 96, "--count=-3");      store64(t + 104, "--count=9223372036854775808");
+    store64(t + 112, "5");              store64(t + 120, "10");
+    store64(t + 128, "--loud");         store64(t + 136, "--color");
+    store64(t + 144, "--color=never");  store64(t + 152, "--color=al");
+    store64(t + 160, "always");         store64(t + 168, "-H");
+    store64(t + 176, "--header=x");     store64(t + 184, "--i-mean-it");
+    store64(t + 192, "--verbose");      store64(t + 200, "-j");
+    store64(t + 208, "--jobs=4");       store64(t + 216, "add");
+    store64(t + 224, "remove");         store64(t + 232, "rm");
+    store64(t + 240, "exec");           store64(t + 248, "bogus-verb");
+    store64(t + 256, "--");             store64(t + 264, "-");
+    store64(t + 272, "-x");             store64(t + 280, "--bogus");
+    store64(t + 288, "-nV");            store64(t + 296, "-c5");
+    store64(t + 304, "--=");            store64(t + 312, "---");
+    store64(t + 320, "");               store64(t + 328, "=");
+    store64(t + 336, "file.txt");       store64(t + 344, "-1");
+    store64(t + 352, "abc");            store64(t + 360, "--loud=1");
+    store64(t + 368, "--name=");        store64(t + 376, "--header");
+    return 0;
+}
+
+# A fresh random token: 0..11 bytes, mostly flag-shaped, occasionally any byte.
+fn _fz_rand_token(): i64 {
+    var alpha = "-=hVncHjx0123456789abz";
+    var len = _fz_next() % 12;
+    var s = alloc(len + 1);
+    var i = 0;
+    while (i < len) {
+        var b = load8(alpha + _fz_next() % 22);
+        if (_fz_next() % 16 == 0) { b = 1 + _fz_next() % 255; }
+        store8(s + i, b);
+        i = i + 1;
+    }
+    store8(s + len, 0);
+    return s;
+}
+
+# Build the iteration's argv into _fz_argv/_fz_argc (argv[0] is the program).
+fn _fz_build_argv(): i64 {
+    var n = _fz_next() % (FZ_MAXTOK + 1);
+    _fz_argv = alloc((n + 2) * 8);
+    store64(_fz_argv, "prog");
+    var i = 1;
+    while (i <= n) {
+        var tok = 0;
+        if (_fz_next() % 4 == 0) {
+            tok = _fz_rand_token();
+        } else {
+            tok = load64(&_fz_pool + (_fz_next() % FZ_POOL_N) * 8);
+        }
+        store64(_fz_argv + i * 8, tok);
+        i = i + 1;
+    }
+    store64(_fz_argv + (n + 1) * 8, 0);
+    _fz_argc = n + 1;
+    return 0;
+}
+
+# 1 if `p` is pointer-identical to one of argv[1..argc).
+fn _fz_is_argv_token(p): i64 {
+    var i = 1;
+    while (i < _fz_argc) {
+        if (load64(_fz_argv + i * 8) == p) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Single-command flag set. Indices: 0 help, 1 version (auto), then 2..7.
+var FZ_F_NAME = 2;
+var FZ_F_COUNT = 3;
+var FZ_F_COLOR = 5;
+var FZ_F_HEADER = 6;
+var FZ_F_REQ = 7;
+var FZ_NFLAGS = 8;
+
+# A single-command handle using every modifier.
+fn _fz_cmd_handle(): i64 {
+    var h = cmdit_new("prog");
+    var f_name = cmdit_str(h, 110, "name", 0, "name");
+    cmdit_env(h, f_name, "CMDIT_FUZZ_NEVER_SET");
+    var f_count = cmdit_int(h, 99, "count", 1, "count");
+    cmdit_range(h, f_count, 1, 10);
+    cmdit_bool(h, 0, "loud", "loud");
+    cmdit_enum(h, 0, "color", "auto", "auto|always|never", "color");
+    cmdit_repeat(h, 72, "header", "header");
+    var f_req = cmdit_bool(h, 0, "i-mean-it", "required");
+    cmdit_required(h, f_req);
+    return h;
+}
+
+# A verb handle: two global flags, three verbs, one alias, one verbatim verb.
+fn _fz_verb_handle(): i64 {
+    var h = cmdit_new("prog");
+    cmdit_bool(h, 0, "verbose", "verbose");
+    cmdit_int(h, 106, "jobs", 1, "jobs");
+    cmdit_verb(h, "add", "add");
+    var v_rm = cmdit_verb(h, "remove", "remove");
+    cmdit_verb_alias(h, v_rm, "rm");
+    var v_exec = cmdit_verb(h, "exec", "exec");
+    cmdit_verb_trailing_after(h, v_exec, 1);
+    return h;
+}
+
+# I1 + I2 + I3 for one result on handle `h` with `nflags` registered flags.
+fn _fz_check_result(h, rc, nflags): i64 {
+    _fz_check(rc == CMDIT_OK || rc == CMDIT_HELP || rc == CMDIT_VERSION || rc == CMDIT_RESULT_ERR,
+      "I1 undocumented result code");
+    var err = cmdit_error(h);
+    _fz_check(err >= CMDIT_ERR_NONE && err <= CMDIT_ERR_TOO_MANY_POSITIONAL, "I2 error outside CmditErr");
+    if (rc == CMDIT_RESULT_ERR) {
+        _fz_check(err != CMDIT_ERR_NONE, "I2 RESULT_ERR with ERR_NONE");
+    } else {
+        _fz_check(err == CMDIT_ERR_NONE, "I2 clean result with an error set");
+    }
+    var ef = cmdit_err_flag(h);
+    var names_none = 0;
+    if (err == CMDIT_ERR_UNKNOWN || err == CMDIT_ERR_BUNDLED) { names_none = 1; }
+    if (err == CMDIT_ERR_UNKNOWN_VERB || err == CMDIT_ERR_NONE) { names_none = 1; }
+    if (names_none == 1) {
+        _fz_check(ef == 0 - 1, "I3 err_flag set for an error that names no flag");
+    }
+    if (err == CMDIT_ERR_MISSING_VALUE || err == CMDIT_ERR_BAD_INT || err == CMDIT_ERR_BAD_ENUM
+      || err == CMDIT_ERR_OUT_OF_RANGE || err == CMDIT_ERR_REQUIRED_MISSING) {
+        _fz_check(ef >= 0 && ef < nflags, "I3 err_flag does not name a registered flag");
+    }
+    return 0;
+}
+
+# One single-command iteration: parse, then the I4-I6 checks and the finalize.
+fn _fz_cmd_iter(): i64 {
+    var h = _fz_cmd_handle();
+    var rc = cmdit_parse_argv(h, _fz_argc, _fz_argv);
+    _fz_check_result(h, rc, FZ_NFLAGS);
+
+    var np = cmdit_positional_count(h);
+    _fz_check(np >= 0 && np <= _fz_argc - 1, "I4 positional count outside argc");
+    var i = 0;
+    while (i < np) {
+        _fz_check(_fz_is_argv_token(cmdit_positional(h, i)), "I4 positional is not an argv token");
+        i = i + 1;
+    }
+
+    if (rc == CMDIT_OK) {
+        var e = cmdit_get_enum(h, FZ_F_COLOR);
+        _fz_check(e >= 0 && e <= 2, "I5 enum index is not a choice");
+        var c = cmdit_get_int(h, FZ_F_COUNT);
+        _fz_check(c >= 1 && c <= 10, "I5 ranged int outside its bounds");
+        var rcount = cmdit_repeat_count(h, FZ_F_HEADER);
+        _fz_check(rcount >= 0 && rcount <= _fz_argc - 1, "I5 repeat count outside argc");
+        var k = 0;
+        while (k < rcount) {
+            _fz_check(cmdit_repeat_get(h, FZ_F_HEADER, k) != 0, "I5 repeat list has a hole");
+            k = k + 1;
+        }
+
+        # finalize: the env var is never set, so required is the only gate.
+        var fr = cmdit_finalize(h);
+        _fz_check_result(h, fr, FZ_NFLAGS);
+        if (cmdit_seen(h, FZ_F_REQ) == 1) {
+            _fz_check(fr == CMDIT_OK, "finalize failed with required seen");
+        } else {
+            _fz_check(fr == CMDIT_RESULT_ERR && cmdit_error(h) == CMDIT_ERR_REQUIRED_MISSING,
+              "finalize passed with required absent");
+            _fz_check(cmdit_err_flag(h) == FZ_F_REQ, "REQUIRED_MISSING names the wrong flag");
+        }
+        var pr = cmdit_require_positionals_max(h, 2);
+        if (np > 2) {
+            _fz_check(pr == CMDIT_RESULT_ERR, "positionals_max(2) passed over the bound");
+        } else {
+            _fz_check(pr == CMDIT_OK, "positionals_max(2) failed inside the bound");
+        }
+    }
+
+    # I6: a second fresh handle agrees; a handle that already failed agrees on the error.
+    var h2 = _fz_cmd_handle();
+    var rc2 = cmdit_parse_argv(h2, _fz_argc, _fz_argv);
+    _fz_check(rc2 == rc && cmdit_positional_count(h2) == np, "I6 fresh handles disagree");
+    _fz_check(cmdit_error(h2) == cmdit_error(h) || rc == CMDIT_OK, "I6 fresh handles disagree on the error");
+    var h3 = _fz_cmd_handle();
+    var prime[24];
+    store64(&prime, "prog");
+    store64(&prime + 8, "--count");
+    store64(&prime + 16, 0);
+    cmdit_parse_argv(h3, 2, &prime);                              # MISSING_VALUE, err_flag = count
+    var rc3 = cmdit_parse_argv(h3, _fz_argc, _fz_argv);
+    _fz_check(rc3 == rc2, "I6 a failed earlier parse changed the result");
+    _fz_check(cmdit_error(h3) == cmdit_error(h2), "I6 a failed earlier parse leaked its error code");
+    _fz_check(cmdit_err_flag(h3) == cmdit_err_flag(h2), "I6 a failed earlier parse leaked its err_flag");
+    return 0;
+}
+
+# One verb iteration: dispatch, the remainder-slice checks, and verb re-entry.
+fn _fz_verb_iter(): i64 {
+    var h = _fz_verb_handle();
+    var rc = cmdit_dispatch_argv(h, _fz_argc, _fz_argv);
+    _fz_check_result(h, rc, 4);
+
+    var vm = cmdit_verb_matched(h);
+    _fz_check(vm >= 0 - 1 && vm < cmdit_verb_count(h), "verb_matched outside the verb table");
+    if (rc != CMDIT_RESULT_ERR) {
+        var va = cmdit_verb_argc(h);
+        var vv = cmdit_verb_argv(h);
+        _fz_check(va >= 0 && va <= _fz_argc - 1, "I4 remainder count outside argc");
+        if (vm == 0 - 1) {
+            _fz_check(va == 0, "I4 remainder without a verb");
+        } else {
+            _fz_check(va >= 1, "I4 matched verb missing from its remainder");
+        }
+        _fz_check(load64(vv + va * 8) == 0, "I4 remainder slice is not NULL-terminated");
+        var i = 0;
+        while (i < va) {
+            _fz_check(_fz_is_argv_token(load64(vv + i * 8)), "I4 remainder token is not an argv token");
+            i = i + 1;
+        }
+        if (rc == CMDIT_OK && vm >= 0) {
+            var vh = cmdit_new("prog verb");
+            cmdit_str(vh, 110, "name", 0, "name");
+            var vr = cmdit_parse_verb(vh, h);
+            _fz_check_result(vh, vr, 3);
+        }
+    }
+
+    var h2 = _fz_verb_handle();
+    var rc2 = cmdit_dispatch_argv(h2, _fz_argc, _fz_argv);
+    _fz_check(rc2 == rc && cmdit_verb_matched(h2) == vm, "I6 fresh dispatch handles disagree");
+    _fz_check(cmdit_error(h2) == cmdit_error(h), "I6 fresh dispatch handles disagree on the error");
+    var h3 = _fz_verb_handle();
+    var prime[24];
+    store64(&prime, "prog");
+    store64(&prime + 8, "--jobs");
+    store64(&prime + 16, 0);
+    cmdit_dispatch_argv(h3, 2, &prime);                           # MISSING_VALUE, err_flag = jobs
+    var rc3 = cmdit_dispatch_argv(h3, _fz_argc, _fz_argv);
+    _fz_check(rc3 == rc2, "I6 a failed earlier dispatch changed the result");
+    _fz_check(cmdit_error(h3) == cmdit_error(h2), "I6 a failed earlier dispatch leaked its error code");
+    _fz_check(cmdit_err_flag(h3) == cmdit_err_flag(h2), "I6 a failed earlier dispatch leaked its err_flag");
+    return 0;
+}
+
+# Edge cases the random walk can't reach: argc 0 and a negative argc.
+fn _fz_edges(): i64 {
+    var empty[8];
+    store64(&empty, 0);
+    _fz_argc = 0;
+    _fz_argv = &empty;
+    var h = _fz_cmd_handle();
+    _fz_check(cmdit_parse_argv(h, 0, &empty) == CMDIT_OK, "argc 0 parse is not OK");
+    var hv = _fz_verb_handle();
+    _fz_check(cmdit_dispatch_argv(hv, 0 - 5, &empty) == CMDIT_OK, "negative argc dispatch is not OK");
+    _fz_check(cmdit_verb_matched(hv) == 0 - 1 && cmdit_verb_argc(hv) == 0, "negative argc matched a verb");
+    return 0;
+}
+
+# Run every seed: FZ_ITERS random argvs through both cores, memory reset per argv.
+fn main(): i64 {
     alloc_init();
-    fuzz_main("test", 4);
-    println("fuzz: ok");
+    _fz_build_pool();
+    _fz_edges();
+    var total = 0;
+    _fz_seed = 1;
+    while (_fz_seed <= FZ_SEEDS) {
+        _fz_state = _fz_seed * 2654435761;
+        _fz_iter = 0;
+        while (_fz_iter < FZ_ITERS) {
+            alloc_reset();
+            _fz_build_argv();
+            _fz_cmd_iter();
+            _fz_verb_iter();
+            _fz_iter = _fz_iter + 1;
+            total = total + 1;
+        }
+        _fz_seed = _fz_seed + 1;
+    }
+    _fz_out("fuzz: ");
+    fmt_int(total);
+    _fz_out(" argvs, both cores, every invariant held\n");
     return 0;
 }
 

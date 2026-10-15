@@ -8,10 +8,11 @@
 #        CMDIT_NAME=env-bob ./build/cmdit-smoke     # -> name falls back to the env var
 #        ./build/cmdit-smoke --help        ./build/cmdit-smoke --version
 #
-# cmdit is a stdlib-only project (no external [deps.X]), so `cyrius build` does
-# not auto-prepend stdlib — the entry includes what it uses explicitly (the
-# tarka-test.cyr pattern). Consumers of dist/cmdit.cyr get stdlib auto-prepended
-# via their own dep resolution.
+# The entry includes the stdlib it uses explicitly (the tarka-test.cyr pattern),
+# so it also compiles under `cyrius build --no-deps`. A plain `cyrius build`
+# additionally prepends the whole declared [deps].stdlib set; the duplicate
+# includes dedupe. Consumers of dist/cmdit.cyr get stdlib via their own dep
+# resolution plus the bundle's compile-verified `# Requires` block.
 include "lib/vec.cyr"      # vec_get (transitively referenced by string/alloc)
 include "lib/args.cyr"     # args_init / argc / argv (pulls syscalls + alloc)
 include "lib/string.cyr"   # strlen
@@ -20,8 +21,10 @@ include "lib/io.cyr"       # getenv (cmdit_env / cmdit_finalize)
 include "src/cmdit.cyr"
 
 fn _putc(ch): i64 { var b[8]; store8(&b, ch); sys_write(1, &b, 1); return 0; }
+# Write a NUL-terminated string to stdout (no newline).
 fn puts(s): i64 { syscall(1, 1, s, strlen(s)); return 0; }
 
+# Register one flag of every kind, parse the real argv, print what landed.
 fn main(): i64 {
     var h = cmdit_new("cmdit-smoke");
     var f_name  = cmdit_str (h, 110, "name", 0, "a name (env: CMDIT_NAME)");      # -n / --name

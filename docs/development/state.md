@@ -5,6 +5,14 @@
 
 ## Version
 
+**1.3.0** — built 2026-10-14. Toolchain pin `6.6.20` → `6.7.9` (`lib/` byte-identical to
+`6.7.9/lib`). **`cmdit_new` ~6× faster**: 1.97 µs, was ~11.5, from zeroing the entry table
+word-at-a-time. **`cmdit_argv` linear on Linux**: it was quadratic, re-walking
+`/proc/self/cmdline` per index, so 20,000 arguments cost 2.6 s; now 11 ms. **The fuzz harness is
+real now**: it had been a stub that called nothing since 0.1.0, and it now runs 6,400 seeded
+argvs per run through both pure cores, mutation-proven 8/9. Benchmarks were re-captured with a
+1.0.0 → 1.3.0 bisect. `cyrius audit` is clean on every stage. No API change. **357/357**.
+
 **1.2.6** — built 2026-10-14. **Maintenance only.** Toolchain pin `6.6.2` → `6.6.20` and a full
 `cyrius lib sync --full --relock` (113 files, byte-identical to `6.6.20/lib`). `cyrius.lock` is
 now tracked. `dist/` was regenerated: `distlib` now emits a compile-verified `# Requires` include
@@ -54,7 +62,7 @@ stop a `$(…)` in a name executing at TAB time.
 
 **1.2.0** — built 2026-07-25. Verb introspection + shell completions (append-only):
 `cmdit_verb_count` / `_name_at` / `_help_at` / `_is_alias` / `_canonical_at` and
-`cmdit_completions(h, shell)` for bash/zsh/fish. Surfaced by the stiva adoption (35 verbs).
+`cmdit_completions(h, shell)` for bash/zsh/fish. Surfaced by the stiva adoption (36 verbs).
 Toolchain pin `6.2.44` → `6.4.78`.
 
 **1.1.0** — built 2026-06-25. Append-only, non-breaking on the frozen 1.0.0 surface:
@@ -100,9 +108,9 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Toolchain
 
-- **Cyrius pin**: `6.6.20` (in `cyrius.cyml [package].cyrius`) — CI derives the
+- **Cyrius pin**: `6.7.9` (in `cyrius.cyml [package].cyrius`) — CI derives the
   toolchain from it, so there is no version to sync in the workflow YAML.
-- **Vendored `lib/`**: 113 files, exactly `6.6.20/lib` (`cyrius lib sync --full --relock`),
+- **Vendored `lib/`**: 113 files, exactly `6.7.9/lib` (`cyrius lib sync --full --relock`),
   hash-pinned in `cyrius.lock`. A drift in either direction warns on every build, and both
   warnings are currently silent.
 - **On a pin move**, run `cyrius lib sync --full --relock` *before* the first build. A build
@@ -131,7 +139,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **345/345**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
+- `tests/cmdit.tcyr` — **357/357**. The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
   `cmdit_help`, `cmdit_verbs_help`, `cmdit_version`), int-overflow rejection +
@@ -142,7 +150,15 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
 - `tests/cmdit.bcyr` — **7 real benchmarks** (`cmdit_new` floor, register/parse
   subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate);
-  see [`benchmarks.md`](../benchmarks.md). `tests/cmdit.fcyr` — fuzz stub.
+  see [`benchmarks.md`](../benchmarks.md).
+- `tests/cmdit.fcyr` — **real fuzz harness** (1.3.0; it was a stub before). 16 seeds × 400
+  argvs through `cmdit_parse_argv` and `cmdit_dispatch_argv`, mixing a 48-token pool with
+  random bytes and checking six contract invariants (I1–I6 in its header). Mutation-proven:
+  8 of 9 seeded source bugs caught. The survivor (the remainder slice's NULL terminator) is
+  unobservable because fresh `alloc` memory is already zero. ~0.7 s.
+- **Poison gates:** `cyrius fuzz --poison=ab` and `CYRIUS_POISON=1 cyrius test` both pass, so
+  there is no redzone overwrite in cmdit. Neither can observe `cmdit_new`'s zeroing loop:
+  poison fills only the redzones.
 
 ## Dependencies
 
@@ -164,7 +180,7 @@ Six repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Pins are as read from eac
 consumer's `cyrius.cyml` on 2026-10-14, and every one is on **≥ 1.2.4**, so all carry the
 1.2.4 completion-injection fix.
 
-- **stiva 3.0.22** — pinned `1.2.4`. The most demanding consumer (35 verbs) and the source
+- **stiva 3.0.22** — pinned `1.2.4`. The most demanding consumer (36 verbs) and the source
   of the 1.2.0/1.2.1/1.2.2 work: verb introspection + completions, the two
   completion-generator fixes, and the `--` forwarding + `verb_trailing_after` pair.
 - **kii 1.6.0** — pinned `1.2.5`. The first consumer and the faithful-extraction proof: it
@@ -180,24 +196,25 @@ None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
 
 ## Next
 
-v1.0.0 shipped and the API is frozen; 1.1–1.2 are all append-only on it. 1.2.6 is a
-toolchain/lib refresh with no behaviour change.
+v1.0.0 shipped and the API is frozen; 1.1–1.3 are all append-only on it. 1.3.0 is a speed and
+test-coverage release with no behaviour change.
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.2.6 are optional.** The library code is unchanged. A consumer's
-  `getenv` comes from its *own* vendored stdlib, not cmdit's `lib/`. The visible difference is
-  the bundle's new `# Requires` block and the 4-leaf sidecar.
-- **`docs/benchmarks.md` is stale.** The 1.2.6 capture reads `cmdit_new_floor` 11.3 µs vs the
-  documented 13.8 µs, and `dispatch_before_verb` 164 ns vs 203 ns. The table is a v1.0
-  capture (pin 6.2.44, 1.0.0 source). Since 6.6.x, `bench` also subtracts a measured
-  clock-read floor, so old and new numbers are not directly comparable. Re-capturing honestly
-  needs a bisect; tracked in [`roadmap.md`](roadmap.md#open-maintenance).
-- **Tooling noise is at zero; keep it there.** `cyrius fmt --check` and `lint` are clean on
-  all seven sources under 6.6.20. `doc --check` is clean on `src/cmdit.cyr` (54/54 public
-  fns). It flags only `main` and local print helpers in `programs/`/`tests/`, which 6.6.2
-  flagged too. 6.6.20's `lint` is stricter about deferral cross-references, and 1.2.6 fixed
-  the one site it caught.
-- **v2 backlog and adoption** — see [`roadmap.md`](roadmap.md).
+- **Consumer re-pins to 1.3.0 are worth taking but not urgent.** The gain is the ~9.5 µs
+  `cmdit_new` saving per handle, which matters only for tools that build many handles (verb
+  re-entry builds one per matched verb). The bundle compiles on consumer pins as old as 6.6.2.
+- **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
+  is a site-by-site map from that repo's CLI code to cmdit calls. shakti, kriya, cyim and
+  bannermanor are blocked on cmdit gaps; klug is not worth migrating.
+- **Deferred past 1.3.0 by decision (2026-10-14) — the survey's gaps.** The two correctness
+  defects the stdlib already fixed in 6.6.5 lead the list. First, the 128-positional cap drops
+  the rest silently (audit SEC-3, accepted at 1.0.0 because it matched the stdlib, which no
+  longer holds). Second, `--bool=0` sets the flag. Next come the missing offending-token
+  accessor (seven repos) and the missing top-level stop-at-positional. Ranked list:
+  [`roadmap.md`](roadmap.md#gaps-found-by-the-adoption-survey-2026-10-14--open-deferred-past-130).
+- **Tooling noise is at zero; keep it there.** Under 6.7.9, `cyrius audit` is clean on every
+  stage, and `fmt --check` / `lint` / `doc --check` are clean on all seven sources.
+- **v2 backlog** — see [`roadmap.md`](roadmap.md).
 
 See [`roadmap.md`](roadmap.md) + `agnosticos/docs/development/planning/cmdit.md`.

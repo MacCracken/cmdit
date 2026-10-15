@@ -4,6 +4,164 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-14
+
+**Toolchain `6.6.20` → `6.7.9`, `cmdit_new` ~6× faster, `cmdit_argv` linear instead of
+quadratic, and a fuzz harness that actually fuzzes.** No API change: the frozen 1.0.0 surface
+plus the 1.1–1.2 additions behave identically on every input. **357/357** assertions (345 + 12
+for the argv fix). The new fuzz harness passes, and so does `cyrius fuzz --poison=ab`, with the
+whole suite clean under `CYRIUS_POISON=1`. `cyrius audit` is clean on every stage.
+
+### Changed — `cmdit_new` zeroes its entry table a word at a time
+
+The 64 × 112 = 7168-byte entry table was zeroed with 7168 `store8`s. That one loop was
+essentially the whole cost of building a handle. It is now 896 `store64`s, with a byte loop
+for any tail if the table size ever stops being a multiple of 8. Interleaved A/B on the same
+build, median of 7:
+
+| bench | 1.2.6 | 1.3.0 | |
+|---|---|---|---|
+| `cmdit_new_floor` | 11.56 µs | **1.94 µs** | −83% |
+| `parse_argv_mixed` | 11.77 µs | 2.37 µs | −80% |
+| `repeat_accumulate_32` | 12.53 µs | 3.00 µs | −76% |
+
+⚠ **Not covered by a failing test, and recorded as such.** Deleting the loop entirely keeps
+all 345 assertions and the fuzz harness green, even under `CYRIUS_POISON=1`. The memory
+`alloc` hands out is already zero, and poison mode fills only the redzones. cmdit keeps the
+explicit zero because `alloc` does not promise zeroed memory on every target. Like the 1.2.4
+alloc-failure check beside it, it is defence-in-depth that no fixture can reach.
+
+### Fixed — `cmdit_argv` was quadratic in the argument count on Linux
+
+`cmdit_argv` asked stdlib `argv(i)` for each index in turn, and on Linux `argv(i)` re-walks
+`/proc/self/cmdline` from byte 0 to the i-th NUL on every call. Materializing the process
+argv therefore cost O(argc × bytes) before parsing even began. Measured end to end on
+`cmdit-smoke` with N positionals:
+
+| N | 1.2.6 | 1.3.0 |
+|---|---|---|
+| 1,000 | 7 ms | 2 ms |
+| 5,000 | 159 ms | 4 ms |
+| 20,000 | **2,655 ms** | **11 ms** |
+| 100,000 | — | 48 ms |
+
+The arguments sit end to end in that buffer, so one walk finds them all. The new pure helper
+`_cmdit_split_flat` does that walk, and `cmdit_argv` uses it under
+`#ifdef CYRIUS_TARGET_LINUX`. Other targets keep `argv(i)`: agnos reads a pointer table, which
+is already O(1) and whose strings need not be adjacent. The result is pointer-identical to the
+old loop, including empty arguments (a bare NUL). Found by the kriya adoption survey: kriya had
+already fixed the same defect in its own argv bridge (kriya 1.6.17).
+
+**+12 assertions (345 → 357).** The helper is driven with a synthetic buffer that includes an
+empty argument and a sentinel slot. The live process argv must come back pointer-identical to
+`argv(i)` and NULL-terminated. Mutation-proven: a walk that skips the separator, a walk that
+writes one slot too many, and a Linux branch that starts at the wrong argument are each
+caught. A dropped NULL terminator is not, for the same zeroed-memory reason as above.
+
+### Fixed — the fuzz harness was a stub
+
+`tests/cmdit.fcyr` called `fuzz_main("test", 4)`, which returned 0 without touching cmdit.
+Every `cyrius fuzz` since 0.1.0 reported PASS on a harness that exercised nothing. It is
+replaced by a real one: 6,400 seeded argvs per run (16 seeds × 400) through both pure cores,
+`cmdit_parse_argv` and `cmdit_dispatch_argv`. Each argv mixes a 48-token pool (every
+registered flag in both spellings, good and bad values, verbs and an alias, `--`, bundled and
+attached shorts, `--=`) with random byte strings. It then checks the documented contract,
+not particular outcomes:
+
+- **I1** the result code is documented.
+- **I2** the error is a `CmditErr`, and is NONE exactly on a clean result.
+- **I3** `cmdit_err_flag` names a registered flag for the five errors that name one, and
+  is -1 for the rest.
+- **I4** every positional and remainder-slice token is pointer-identical to an argv token,
+  and the counts fit argc.
+- **I5** on a clean parse, the enum index is a choice, the ranged int is in bounds, and the
+  repeat list is dense. Then `cmdit_finalize`'s required gate and
+  `cmdit_require_positionals_max`.
+- **I6** two fresh handles agree, and a handle whose previous parse *failed* reports the same
+  error as a fresh one. That is the 1.2.4 `err_entry` leak class, now checked for both cores.
+
+A failure prints the invariant, seed, iteration and the argv, then exits 1.
+
+⭐ **Mutation-proven: 8 of 9 seeded source bugs are caught.** Caught: dropping the 1.2.4 error
+reset in either core, MISSING_VALUE no longer naming its flag, a positional stored from the
+wrong pointer, the range upper bound disabled, enum validation disabled, the required check
+disabled, and the 1.2.4 negative-argc clamp removed. The survivor is dropping the remainder
+slice's NULL terminator. That is unobservable for the same reason as the zeroing loop above:
+the slot is already zero.
+
+The harness also runs clean under `--poison=ab` (fill 0xA5 and 0x5A, identical output) and the
+full suite under `CYRIUS_POISON=1`: no redzone overwrite anywhere in cmdit.
+
+### Changed — toolchain and libs
+
+- **Pin `6.6.20` → `6.7.9`.** This time `cyrius lib sync --full --relock` ran **before** the
+  first build, so there was no refusal (see 1.2.6). `lib/` is byte-identical to `6.7.9/lib`:
+  113 files, 67 modified, none added or removed. `cyrius.lock` was refreshed.
+- **6.7.x's language changes were checked against cmdit's sources, not assumed:** the new
+  reserved words (`trait`, `const`, `true`/`false`, `do`, `dyn`); `!` becoming a real operator
+  (6.7.3; before it, a lone `!` was silently dropped); narrow `*T` dereference (6.7.8); and
+  the unmatched-`}` and for-step refusals (6.7.9). Every hit sits inside a string literal or a
+  comment.
+- **Artifacts moved by 8 bytes**, except `cmdit-verbs`, which grew 4,104 B. With
+  `CYRIUS_DCE=1` its live code also moved 8 B. The difference is one new unreachable stdlib
+  function (`sys_ppoll`, additive in 6.7.9) pushing the file over a 4 KB alignment boundary.
+- **`dist/` regenerated.** The bundle differs from 1.2.6 only in the version stamp, the zeroing
+  loop and the argv walk; the `cmdit.deps` sidecar is unchanged. It was re-verified on a
+  **6.6.2** compiler (the full suite through `dist/cmdit.cyr`, 357/357, with the argv fast path
+  live: 20,000 arguments in 22 ms), so consumers pinned as far back as 6.6.2 can take it.
+
+### Changed — docs and audit hygiene
+
+- **`docs/benchmarks.md` re-captured, with the v1.0 drift finally attributed.** Every number is
+  now a median of 7 interleaved runs. A bisect compiled the same harness against every tag's
+  source, and the 1.0.0 source under every installed toolchain:
+  - No toolchain from 6.6.2 to 6.7.9 moved anything.
+  - From 1.0.0 to 1.2.6, construction and parsing were flat. Dispatch got 12% slower at
+    1.2.2, the cost of forwarding `--` and of `verb_trailing_after`.
+  - The v1.0 table's 13.8 µs is not reproducible on any installed toolchain (the 1.0.0 source
+    measures 11.5 µs everywhere). The gap lives in the uninstalled 6.2.44 → 6.6.2 span or in
+    capture conditions.
+- **`cyrius audit` flagged 10 undocumented functions** in `programs/` and `tests/` (`main` and
+  local print helpers). Each now has a one-line comment, so every audit stage is clean.
+- **A stale claim in five entry files was corrected**: "`cyrius build` does not auto-prepend
+  stdlib for a stdlib-only project". It does; a normal build carries `assert_*` functions
+  that `--no-deps` does not. The explicit includes stay, so the entries still compile
+  standalone.
+- **Two source comments corrected; code unchanged.** The `CmditErr` comment claimed byte
+  compatibility with stdlib `FlagErr`. Codes 0..4 still match, but from 5 the two diverged:
+  the stdlib gave 5 to `UNEXPECTED_VALUE` in 6.6.5. `cmdit_required`'s comment cited agnova's
+  `--user`, which agnova has since made optional.
+- **README: a handle is single-parse.** That was always the model (ADR-0002 builds a fresh
+  handle per verb), but nothing said it. A second parse on the same handle resets only the
+  error fields (1.2.4); positionals, values and the matched verb carry over.
+
+### Adoption survey — notes filed in 18 repos, and the gaps they found
+
+Each of the 18 candidates from the 2026-06-25 review now has an **"Adopting cmdit (CLI
+parsing)"** section appended to its `docs/development/roadmap.md`. Each maps the repo's
+hand-rolled CLI sites (`file:line`) to cmdit calls, names the gaps, and lists the tests and
+goldens that must migrate. The edits were append-only: no source, manifest or `lib/` was
+touched, and the pre-existing uncommitted roadmap edits in agnova, attn11, hapi, phylax and
+whirl were preserved byte for byte. klug had no roadmap, so one was created.
+
+Verdicts range from clean drop-ins (yo, whirl, takumi) to **blocked**:
+
+- **shakti** — silent positional cap, no top-level stop-at-positional, and no offending token.
+- **kriya** — positional cap, plus clusters and optional values.
+- **cyim** — optional-value and once-only flags.
+- **bannermanor** — migrating would regress fixes it already has from stdlib `flags`.
+- **klug** — its CLI is too small to be worth it.
+
+The gaps, ranked by how many repos they block, are in
+[`docs/development/roadmap.md`](docs/development/roadmap.md). The top two are correctness
+defects that **the stdlib parser cmdit was forked from fixed in 6.6.5**, and cmdit still has:
+
+- the silent 128-positional cap;
+- `--bool=0` setting the flag.
+
+Both reproduce on `cmdit-smoke`. They change behaviour, so they are deliberately **not** in
+1.3.0 and are deferred to a later release.
+
 ## [1.2.6] - 2026-10-14
 
 **Maintenance: toolchain `6.6.2` → `6.6.20` and a full vendored-stdlib refresh.** No behaviour
