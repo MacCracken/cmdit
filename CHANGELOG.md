@@ -4,6 +4,59 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-10-14
+
+**Maintenance: toolchain `6.6.2` → `6.6.20` and a full vendored-stdlib refresh.** No behaviour
+change in `src/cmdit.cyr` (one doc-comment reflow, byte-neutral). **345/345** assertions, fuzz,
+and the 7 benchmarks are green.
+
+### Changed
+
+- **Toolchain pin `6.6.2` → `6.6.20`.** CI reads it from `cyrius.cyml`, so no workflow edit.
+- **`cyrius lib sync --full --relock`** re-vendored `lib/`: 113 files, byte-identical to
+  `6.6.20/lib`. 95 were modified and 5 are new (`alloc_cx`, `boxed`, `hashseed`, `poison`,
+  `tls_hostid`); none were removed. The shadow warning that every 1.2.5 build printed (12 stale
+  bundled libs) is gone.
+- **`cyrius.lock` is now tracked.** 6.6.20's build writes it (113 sha256 rows) and checks
+  `lib/` against it. The sibling repos already commit theirs.
+
+  ⚠ Upgrade gotcha: the first `cyrius build` under the new pin auto-vendored the declared
+  stdlib set (25 files with platform variants) and wrote `cyrius.lock` with **every other file's
+  old hash**. After that, a plain `lib sync --full` refused 73 rows as "DISAGREE" and wrote
+  nothing. `--relock` is the documented recovery when the pin has just moved. Each refused row
+  was checked against the committed previous-pin file before relocking. A changed installed
+  snapshot would have needed a reinstall instead.
+- **`dist/` regenerated, and `cyrius distlib` changed the bundle's shape.** `dist/cmdit.cyr` now
+  opens with a compile-verified `# Requires` block (`include` of `lib/alloc`, `string`, `args`,
+  `io`). `dist/cmdit.deps` lists exactly those 4 leaves instead of all 10 `[deps].stdlib`
+  entries. The 6 that dropped out (`fmt`, `vec`, `str`, `syscalls`, `assert`, `bench`) are needed
+  by cmdit's own programs and tests, not by the library. Fourteen sibling libraries already ship
+  this layout. Consumer-side check: smoke and the full suite were built against
+  `dist/cmdit.cyr` instead of `src/`. The bundle's includes overlap the program's own, the
+  compiler dedupes them (binary size is identical), and all 345 assertions pass.
+- **`cmdit_require_positionals` doc comment reflowed.** 6.6.20's `cyrlint` requires a
+  deferral's cross-reference on the *same line* as the word "Deferred". 6.6.2 accepted it on the
+  next line. Lint is back to 0. All five artifacts are sha256-identical before and after.
+
+### Stdlib delta on cmdit's call surface
+
+`strlen`, `args_init`, `argc` and `argv` are body-identical. Two entry points changed:
+
+- **`getenv`** (stdlib 6.6.8): if its internal copy allocation fails, it now returns 0 (a miss).
+  Before, it stored to address 0. This reaches cmdit through `cmdit_env` → `cmdit_finalize`.
+  Under OOM, an env fallback now reads as "unset", which cmdit already handles as the ordinary
+  path.
+- **`alloc`**: only `#ifdef CYRIUS_POISON` instrumentation (the new `lib/poison.cyr`). It is
+  inert in a default build.
+
+### Binary size: +30 KB, almost all of it unreachable stdlib
+
+`cmdit-smoke` grew 120,104 → 150,728 B. With `CYRIUS_DCE=1`, the **live** code went 38,184 →
+44,232 B (+6 KB). The other ~24.6 KB is unreachable stdlib (387 → 474 unreachable fns), which
+the opt-in DCE pass drops. The bundled-lib half of the sync is **byte-neutral**: smoke, verbs,
+completions, tcyr and bcyr are sha256-identical before and after `--full`. All of the growth
+comes from the compiler plus the declared-stdlib move.
+
 ## [1.2.5] - 2026-09-11
 
 ### Changed

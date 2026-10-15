@@ -5,6 +5,17 @@
 
 ## Version
 
+**1.2.6** — built 2026-10-14. **Maintenance only.** Toolchain pin `6.6.2` → `6.6.20` and a full
+`cyrius lib sync --full --relock` (113 files, byte-identical to `6.6.20/lib`). `cyrius.lock` is
+now tracked. `dist/` was regenerated: `distlib` now emits a compile-verified `# Requires` include
+block, and the `dist/cmdit.deps` sidecar dropped from 10 entries to 4 leaves (alloc, string,
+args, io). The only source edit is a doc-comment reflow for 6.6.20's stricter deferral lint
+(byte-neutral). The one stdlib change that reaches cmdit is `getenv`'s OOM guard. **345/345**.
+
+**1.2.5** — built 2026-09-11. Toolchain `6.5.35` → `6.6.2`, no source change. cmdit builds no
+`Result`/`Option`/`Either`, so the 6.6.0 value form has nothing to bite on. All three `callptr`
+sites were traced to their full target sets, and none returns a pair.
+
 **1.2.4** — built 2026-08-23. **P-1 audit of the whole library.** No API change; every fix is
 a guard. One **security** finding: `cmdit_completions` interpolated the program name RAW into
 all three emitters (five sites), and on the documented `cmdit_new(0)` path that name is
@@ -89,10 +100,13 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Toolchain
 
-- **Cyrius pin**: `6.5.35` (in `cyrius.cyml [package].cyrius`) — CI derives the
+- **Cyrius pin**: `6.6.20` (in `cyrius.cyml [package].cyrius`) — CI derives the
   toolchain from it, so there is no version to sync in the workflow YAML.
-- **Vendored `lib/`**: 108 files, exactly `6.5.35/lib` (`cyrius lib sync --full`).
-  A drift in either direction warns on every build; both warnings are currently silent.
+- **Vendored `lib/`**: 113 files, exactly `6.6.20/lib` (`cyrius lib sync --full --relock`),
+  hash-pinned in `cyrius.lock`. A drift in either direction warns on every build, and both
+  warnings are currently silent.
+- **On a pin move**, run `cyrius lib sync --full --relock` *before* the first build. A build
+  under the new pin writes the lock from the old files, and a plain `--full` then refuses.
 
 ## Source
 
@@ -112,7 +126,8 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 - `programs/completions.cyr` — shell-completion demo (1.2.0).
 - `dist/cmdit.cyr` — generated bundle (`cyrius distlib`); consumers import this.
 - `dist/cmdit.deps` — the stdlib-leaf sidecar `cyrius distlib` emits alongside it
-  (new at 1.2.3, from toolchain 6.5.35); `cyrius deps` consumes it consumer-side.
+  (new at 1.2.3; since 1.2.6 it lists 4 compile-verified leaves, not the declared
+  set); `cyrius deps` consumes it consumer-side.
 
 ## Tests
 
@@ -132,57 +147,57 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 ## Dependencies
 
 - stdlib — string, fmt, alloc, io, vec, str, syscalls, **args**, assert, bench.
-  Note: cmdit is **stdlib-only** (no external `[deps.X]`), so `cyrius build` does
-  not auto-prepend stdlib — `programs/smoke.cyr` and `tests/cmdit.tcyr` include
-  their stdlib (`lib/args.cyr`, `lib/string.cyr`, `lib/io.cyr`, …) explicitly.
-  Consumers of `dist/cmdit.cyr` get stdlib via their own dep resolution: need
-  `"args"` for the `cmdit_argv`/`cmdit_parse` /proc read, and now **`"io"`** for
-  `getenv` (referenced unconditionally by `cmdit_parse` via `cmdit_finalize`;
-  pure `cmdit_parse_argv`-only callers link it but never invoke it).
+  `cyrius build` prepends this whole declared set even though cmdit has no external
+  `[deps.X]`. A `--no-deps` build of smoke is ~30 KB smaller, and a normal build carries
+  `assert_*` functions that smoke never includes. `programs/` and `tests/` also include
+  their stdlib explicitly; the duplicates dedupe.
+- **What the library itself needs** is the 4 compile-verified leaves in `dist/cmdit.deps`
+  and in the `# Requires` block at the top of `dist/cmdit.cyr`: alloc, string, args, io.
+  `"args"` is for the `cmdit_argv`/`cmdit_parse` /proc read. `"io"` is for `getenv`, which
+  `cmdit_parse` references unconditionally via `cmdit_finalize`; pure
+  `cmdit_parse_argv`-only callers link it but never invoke it. The other 6 declared modules
+  serve cmdit's own programs, tests, and benchmarks.
 
 ## Consumers
 
-Four repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Tags are as pinned in each
-consumer's `cyrius.cyml` on 2026-08-23 — **none has moved to 1.2.3 yet**, and nothing
-forces them to: 1.2.3 is byte-neutral, so a re-pin buys only the fresher vendored stdlib.
+Six repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Pins are as read from each
+consumer's `cyrius.cyml` on 2026-10-14, and every one is on **≥ 1.2.4**, so all carry the
+1.2.4 completion-injection fix.
 
-- **stiva 3.0.19** — pinned `1.2.2`, the most demanding consumer (35 verbs) and the
-  source of the 1.2.0/1.2.1/1.2.2 work: verb introspection + completions, the two
+- **stiva 3.0.22** — pinned `1.2.4`. The most demanding consumer (35 verbs) and the source
+  of the 1.2.0/1.2.1/1.2.2 work: verb introspection + completions, the two
   completion-generator fixes, and the `--` forwarding + `verb_trailing_after` pair.
-- **kii 1.4.1** — pinned `1.1.0`. The first consumer + the faithful-extraction proof:
-  dropped its hand-rolled flag-set on stdlib `flags` + `build_argv_array`;
-  `cmdit_new`/`cmdit_parse`/`cmdit_get_*`/`cmdit_positional` + auto `--help`/`--version`.
-- **anuenue 1.2.0** — pinned `1.1.0`. The second worked migration; the rich-help consumer
-  that surfaced `cmdit_help_flags`.
-- **ifran 2.2.0** — pinned `1.1.0`.
+- **kii 1.6.0** — pinned `1.2.5`. The first consumer and the faithful-extraction proof: it
+  dropped its hand-rolled flag-set on stdlib `flags` + `build_argv_array`.
+- **anuenue 1.4.0** — pinned `1.2.4`. The second worked migration, and the rich-help
+  consumer that surfaced `cmdit_help_flags`.
+- **ifran 2.2.1** — pinned `1.2.5`.
+- **dig 0.4.1** — pinned `1.2.4`. Tier-3 from the adoption review.
+- **commandress 1.1.8** — pinned `1.2.4`.
+
+Only stiva calls `cmdit_completions`, and its handle is `cmdit_new("stiva")` (a literal).
+None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
 
 ## Next
 
-v1.0.0 shipped and the API is frozen; 1.1–1.2 are all append-only on it. 1.2.3 carries no
-source change — it exists to clear the toolchain/lib drift that warned on every build.
+v1.0.0 shipped and the API is frozen; 1.1–1.2 are all append-only on it. 1.2.6 is a
+toolchain/lib refresh with no behaviour change.
 
 Open, in rough order:
 
-- **Consumer re-pins are optional.** stiva sits on 1.2.2, kii/anuenue/ifran on 1.1.0.
-  Since 1.2.3 is byte-neutral there is no correctness reason to move; kii/anuenue/ifran
-  would gain the 1.2.0 introspection + completions surface if they want it.
-- **`docs/benchmarks.md` is stale and not from this release.** A fresh capture reads
-  `cmdit_new_floor` 11.4 µs vs the documented 13.8 µs and `dispatch_before_verb` 153 ns
-  vs 203 ns, but the 1.2.3 A/B proves the toolchain contributed none of it — the table is
-  a v1.0 capture under pin 6.2.44 against 1.0.0 source. Re-capturing honestly needs a
-  1.0.0 → 1.2.3 bisect. See [`../benchmarks.md`](../benchmarks.md).
-- **Consumers should move to 1.2.4** (it carries the security fix), but **none of the four is
-  currently exposed** — checked, not assumed, on 2026-08-23. Exposure needs BOTH a
-  `cmdit_completions` call and a program name taken from `argv[0]`. Only stiva calls
-  `cmdit_completions` (its `completions` verb), and its top-level handle is
-  `cmdit_new("stiva")` — a literal. kii, anuenue and ifran likewise pass literals and never
-  generate completions. The re-pin closes the path rather than fixing a live break.
-- **`cyrius fmt` / `lint` / `doc --check` are clean on all seven sources** as of 1.2.4 (they
-  reported 9 deferrals, 16 warnings and 8 undocumented functions at 1.2.3). Worth keeping at
-  zero — the noise is what hid the four real deferral entries.
-- **Deferred v2 backlog**: mutex/required-if sugar, optional-value flags, bundled shorts,
-  `--no-foo`, named-positional help, config cascades — see
-  [`../adr/0003-v1-freeze.md`](../adr/0003-v1-freeze.md). Plus the known micro-opt:
-  `cmdit_new`'s byte-at-a-time entry memzero could be word-at-a-time.
+- **Consumer re-pins to 1.2.6 are optional.** The library code is unchanged. A consumer's
+  `getenv` comes from its *own* vendored stdlib, not cmdit's `lib/`. The visible difference is
+  the bundle's new `# Requires` block and the 4-leaf sidecar.
+- **`docs/benchmarks.md` is stale.** The 1.2.6 capture reads `cmdit_new_floor` 11.3 µs vs the
+  documented 13.8 µs, and `dispatch_before_verb` 164 ns vs 203 ns. The table is a v1.0
+  capture (pin 6.2.44, 1.0.0 source). Since 6.6.x, `bench` also subtracts a measured
+  clock-read floor, so old and new numbers are not directly comparable. Re-capturing honestly
+  needs a bisect; tracked in [`roadmap.md`](roadmap.md#open-maintenance).
+- **Tooling noise is at zero; keep it there.** `cyrius fmt --check` and `lint` are clean on
+  all seven sources under 6.6.20. `doc --check` is clean on `src/cmdit.cyr` (54/54 public
+  fns). It flags only `main` and local print helpers in `programs/`/`tests/`, which 6.6.2
+  flagged too. 6.6.20's `lint` is stricter about deferral cross-references, and 1.2.6 fixed
+  the one site it caught.
+- **v2 backlog and adoption** — see [`roadmap.md`](roadmap.md).
 
 See [`roadmap.md`](roadmap.md) + `agnosticos/docs/development/planning/cmdit.md`.

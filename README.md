@@ -5,9 +5,9 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.2.4 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.2.6 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
-command-line forwarding). **1.2.4 is a security release** — the completion generator
+command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes. **1.2.4 is a security release** — the completion generator
 interpolated the program name, which on the `cmdit_new(0)` path comes from `argv[0]`,
 raw into the scripts it emits; it also closes three memory-safety/contract defects. No
 API change. **Consumers on any earlier version that generate completions should update.**
@@ -200,8 +200,11 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   program name raw (an `argv[0]`-derived name could inject shell into the emitted script);
   plus the flag-modifier and repeat-accessor bounds guards, the `err_entry` reset, and
   alloc-failure/input validation. **345/345 tests**, every fix mutation-proven.
+- **1.2.5** — maintenance: toolchain pin 6.6.2, no source change.
+- **1.2.6** — maintenance: toolchain pin 6.6.20 + full vendored stdlib refresh; `dist/`
+  now carries a compile-verified `# Requires` block and a 4-leaf `cmdit.deps` sidecar.
 
-Consumers: **kii**, **anuenue**, **ifran**, **stiva** — all on `[deps.cmdit]`.
+Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
 ## Build
 
