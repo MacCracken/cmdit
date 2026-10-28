@@ -5,7 +5,7 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.4.0 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.5.0 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
 faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`); 1.3.2 is an
@@ -15,7 +15,9 @@ audit sweep with a completion-script security fix; 1.3.3 adds `cmdit_err_token` 
 four small modifiers (once-only, case-insensitive choices, a second long name, refusing a
 flag-shaped value); 1.3.7 adds flag-table introspection and per-verb flags in completions;
 1.4.0 is a refactor and speed sweep with no API or output change (a parse ~2× faster,
-`--help` over 10×). **1.2.4 is a security release** — the completion generator interpolated
+`--help` over 10×); 1.4.1 moves to cyrius 6.7.18; 1.4.2 reads a command line past 2 MiB whole
+on 6.7.12+; 1.5.0 makes the bash and fish completion scripts complete file names whole.
+**1.2.4 is a security release** — the completion generator interpolated
 the program name, which on the `cmdit_new(0)` path comes from `argv[0]`, raw into the
 scripts it emits; it also closes three memory-safety/contract defects. No API change.
 **Consumers on any earlier version that generate completions should update.**
@@ -191,7 +193,7 @@ constants, not API (do not depend on their values).
   The three help renderers write stderr; `cmdit_help_fd` / `cmdit_help_flags_fd` /
   `cmdit_verbs_help_fd(h, fd)` take the stream (1.3.5) — pass 1 for GNU-style `--help` on
   stdout. `cmdit_completions(h, shell)` writes a bash, zsh or fish completion script to
-  stdout (1.2.0; per-verb flags 1.3.7).
+  stdout (1.2.0; per-verb flags 1.3.7; file names kept whole in bash and fish 1.5.0).
 - **Result codes:** `CMDIT_OK` / `CMDIT_HELP` / `CMDIT_VERSION` / `CMDIT_RESULT_ERR`.
   **Exit codes:** `CMDIT_EXIT_OK` (0) / `CMDIT_EXIT_RUN` (1) / `CMDIT_EXIT_USAGE` (2).
   Note the two namespaces collide by value on purpose (`CMDIT_OK` = `CMDIT_EXIT_OK`
@@ -303,7 +305,11 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
 - **1.4.2** — a command line past 2 MiB is read whole on cyrius 6.7.12+ (its `args_init` now
   reads to EOF); only an exact 2 MiB read, which an older stdlib may have cut, is still
   `CMDIT_ERR_ARGV`. **892/892 tests**, 6/6 seeded mutants caught.
-- **1.5.x** — next: see the [roadmap](docs/development/roadmap.md).
+- **1.5.0** — the completion scripts complete file names: bash no longer splits a name at its
+  spaces or globs it (and quotes what it inserts, bash 4+), and fish completes files after the
+  verb. The suite now runs the generated bash script. Reported by sit. **904/904 tests**, 9/9
+  seeded mutants caught.
+- **1.5.x** — the intake for what comes next: see the [roadmap](docs/development/roadmap.md).
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -312,6 +318,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (892/892)
+cyrius test                                          # run tests/*.tcyr  (904/904)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

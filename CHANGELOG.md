@@ -4,6 +4,75 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-28
+
+**The completion scripts complete file names.** After a verb, bash split a file name at
+its spaces and glob-expanded it, and fish completed no file at all. Reported by sit (sit
+1.12.2's closeout audit, L11), which prints cmdit's script as is. No API or error-code
+change. bash's file line becomes three lines and fish gains one; zsh's script is untouched. **892 → 904 assertions**; 9/9 seeded mutants caught, and the control survives.
+
+### Fixed
+
+- **bash: a file name is one candidate.** The file branch was
+  `COMPREPLY=( $(compgen -f -- "$cur") )`. The unquoted substitution word-split and globbed
+  every name: with `my file.txt` in the directory, `my<TAB>` offered `my` and `file.txt`,
+  and a file named `g*` multiplied into duplicates. It now reads compgen's output a line at a
+  time (`while IFS= read -r w; do COMPREPLY+=( "$w" ); done < <(compgen -f -- "$cur")`), after
+  `COMPREPLY=()`.
+  - **`compopt -o filenames`** comes first, so readline quotes the name it inserts and puts a
+    `/` after a directory. It is set in the file branch only. On `complete` it would apply to
+    verbs too: checked with a directory named `ps` beside the verb `ps`, `p<TAB>` completed
+    `ps/` that way, and completes `ps` in 1.5.0.
+  - **bash 3.2 keeps working.** A `read` loop rather than `mapfile`, which bash 3.2 lacks;
+    `compopt` (bash 4+) is silenced where missing. There the candidates are still right, but
+    readline does not quote the inserted name.
+- **fish: files come back after the verb.** The script's global `complete -c <prog> -f` kept
+  files out of the verb position, and nothing turned them on again. One line now follows it:
+  `complete -c <prog> -n 'not __fish_use_subcommand' -F`. fish documents `-F` as allowing a
+  file "even if another applicable `complete` specified `--no-files`". fish is not installed
+  on the build host, so this half rests on that documentation and on the emitted line, not
+  on a run.
+- The `cmdit_completions` doc comment said zsh and fish complete "verbs then files"; fish did
+  not until now.
+
+### Verification
+
+Real readline, driven through a pty in an interactive `bash --norc`, with
+`demo-app run <prefix><TAB>` and a `demo-app` that prints its arguments:
+
+| typed | 1.4.2 | 1.5.0 |
+|---|---|---|
+| `my<TAB>` (`my file.txt` exists) | `<my>` | `<my file.txt>` |
+| `sub<TAB>` (directory `subdir`) | `<subdir>` | `<subdir/>` |
+| `b<TAB>` (file `b\x`) | `<bx>`, a different name | `<b\x>` |
+
+- **A new group, `g115_1_5_0_completion_files`**, pins the emitted bash lines in both script
+  layouts (with and without per-verb flags), the fish line in both, and zsh's `_files`.
+- **The suite now runs the bash script.** A new helper, `run_bash`, forks `/bin/bash -s` and
+  feeds it the generated script plus a fixed driver over a pipe; no argv or command string is
+  built. In a fresh `mktemp -d`, a name with a space, a name with a `*`, a leading space and a
+  backslash each come back as one exact candidate, and the verb position still offers verbs.
+  Without `/bin/bash` the run is skipped with a note.
+- **Mutation round.** Reverting to 1.4.2's line, quoting the substitution whole, dropping
+  `compopt`, `IFS=`, `read -r` or the `COMPREPLY` reset, and, for fish, dropping the `-F` line,
+  turning it into `-f` or dropping its `not` are each caught. The bash run alone catches 5 of
+  the 6 bash mutants. `compopt` acts only inside a real readline completion, so the text
+  check catches that one.
+- The demo transcript differs from 1.4.2's in exactly those four script lines; smoke and verbs
+  print the same bytes. The suite passes against `dist/cmdit.cyr`, and fuzz, both poison gates
+  and `cyrius audit` pass.
+
+### Benchmarks
+
+Interleaved 1.4.2 against 1.5.0, median of 15, at load average ~0.4: `completions_devnull`
+13.97 → 14.32 µs (+2.5%), from the longer bash and fish scripts it writes. The other 12
+benches are within ±3%, the code-layout band.
+
+### Docs
+
+- The roadmap's 1.5.0 item is shipped. The 1.5.x section stays as the intake, with nothing
+  open.
+
 ## [1.4.2] - 2026-10-28
 
 **A command line past 2 MiB is read whole on cyrius 6.7.12 and later.** The 1.3.2 check

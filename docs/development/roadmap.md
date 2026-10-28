@@ -7,9 +7,9 @@
 ## Open — 1.5.x
 
 The public API froze at 1.0.0, and every gap the 2026-10-14 adoption survey pinned shipped
-in 1.3.x. **What is still open is planned as 1.5.x**, each item its own release, numbered in
-the order below. New work comes from consumers: a gap a migration runs into, or a defect
-someone hits. A new item takes the next 1.5.x number.
+in 1.3.x. **Open work is planned as 1.5.x**, each item its own release. **Nothing is open
+now.** New work comes from consumers: a gap a migration runs into, or a defect someone hits.
+A new item takes the next 1.5.x number.
 
 Each one is filed here as an item that names:
 
@@ -22,40 +22,16 @@ and `cmdit_verb_trailing_after` arrived. A defect in cyrius or its stdlib is not
 It is filed as an issue in cyrius `docs/development/issues/`, and cmdit works around it on
 its own side if it must.
 
-### 1.5.0 — completion scripts complete file names
-
-- **Completion scripts split file names, and fish completes none.** Consumer: sit (`sit
-  completions`, cmdit 1.4.0 since sit 1.9.0), found by sit 1.12.2's closeout audit (L11),
-  filed 2026-10-20. sit prints cmdit's script as is and has no workaround of its own.
-  - **bash.** `_cmdit_completions_bash` (`src/cmdit.cyr:2657`) emits
-    `COMPREPLY=( $(compgen -f -- "$cur") )`. The command substitution is unquoted, so each
-    candidate is word-split and globbed. With `my file.txt` in the directory, completing `my`
-    offers `my` and `file.txt` (reproduced on 1.4.0 through `sit completions bash`). The
-    smallest fix: `mapfile -t COMPREPLY < <(compgen -f -- "$cur")`, with `compopt -o filenames`
-    so bash quotes what it inserts. Swapped into the 1.4.0 script, that line offers
-    `my file.txt` as one candidate (checked). The verb and flag `compgen -W` lines are not affected:
-    their words pass the `[A-Za-z0-9_.-]` whitelist.
-  - **fish.** `_cmdit_completions_fish` (`src/cmdit.cyr:2718`) starts with a global
-    `complete -c <prog> -f` and nothing turns files back on after a verb. So fish completes
-    no file argument, though `cmdit_completions`'s comment (`src/cmdit.cyr:2764`) says zsh and
-    fish complete "verbs then files" (zsh's `_files` does). Code-read only: fish is not on the
-    host sit checked. The smallest fix: one more line,
-    `complete -c <prog> -n 'not __fish_use_subcommand' -F`.
-  - The tests check the scripts by substring (`capture_completions`, `tests/cmdit.tcyr`). A
-    check that runs the bash script on a spaced file name (`COMP_WORDS=(prog x my)`,
-    `COMP_CWORD=2`, then the completion function, expecting one candidate `my file.txt`)
-    would pin the bash half.
-
 ## Adoption — demand-gated, not a forced sweep
 
-Adopted (`[deps.cmdit]`): kii, anuenue, stiva, ifran, dig, commandress. See
+Adopted (`[deps.cmdit]`): kii, anuenue, stiva, ifran, dig, commandress, sit. See
 [`state.md`](state.md#consumers) for pins.
 
 Still hand-rolled, from the 2026-06-25 ecosystem CLI review
 ([`agnosticos/docs/development/planning/cmdit.md`](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/cmdit.md)):
 
 1. **Tier-1 drop-ins** — bannermanor, klug, shakti, yo, whirl.
-2. **Tier-2 verb tools** — ark, sit, takumi, hapi, phylax, agnova, hadara, hoosh, cyim;
+2. **Tier-2 verb tools** — ark, takumi, hapi, phylax, agnova, hadara, hoosh, cyim;
    the kriya `argv[0]` multiplexer via `cmdit_basename` + `cmdit_raw_argv`.
 3. **Tier-3 rich/edge** — attn11, owl, chakshu.
 

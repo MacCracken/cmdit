@@ -5,6 +5,15 @@
 
 ## Version
 
+**1.5.0** — built 2026-10-28. **The completion scripts complete file names** (sit L11). bash
+read `$(compgen -f)` unquoted, so a file name split at its spaces and globbed; it now reads
+compgen a line at a time, with `compopt -o filenames` in the file branch only. fish completed
+no file at all, and one `-n 'not __fish_use_subcommand' -F` line brings files back after the
+verb. zsh is unchanged. The suite now runs the generated bash script under `/bin/bash`
+(`run_bash`), and readline's real insertions were checked through a pty. fish was checked
+against its docs only; it is not installed here. `completions_devnull` +2.5% from the
+longer scripts. **892 → 904 assertions**; 9/9 seeded mutants caught, and the control survives.
+
 **1.4.2** — built 2026-10-28. **A command line past 2 MiB is read whole on cyrius 6.7.12+.**
 `_cmdit_argv_whole` refuses only a read of exactly 2 MiB, where it used to refuse 2 MiB or
 more (audit SEC-7). A pre-6.7.12 `args_init` never returns more than 2 MiB, and 6.7.12+ reads
@@ -244,7 +253,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **892/892**, in 114 group functions (1.4.0; it was one ~2,300-line
+- `tests/cmdit.tcyr` — **904/904**, in 115 group functions (1.4.0; it was one ~2,300-line
   `main` whose fixture names all had to be unique). The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
@@ -255,7 +264,9 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   argv[0] adoption, and the C5/C3/C1 groups (`help_short`/`version_short` remap+disable,
   metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
   1.4.0 adds the output-session, table-growth and lookup-equivalence groups, and 1.4.2 the
-  past-2-MiB argv group.
+  past-2-MiB argv group. 1.5.0 adds the completion file-name group, which also runs the
+  generated bash script under `/bin/bash -s` through `run_bash` (fork, a pipe each way, a
+  fixed driver; skipped with a note where `/bin/bash` is missing).
 - `tests/cmdit.bcyr` — **13 real benchmarks** (`cmdit_new` floor, register/parse
   subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate, the
   1.3.2 `verb_new_floor`, the 1.3.7 `flag_find_long`, and 1.4.0's `flag_find_long_36` over
@@ -290,7 +301,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Consumers
 
-Six repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Pins are as read from each
+Seven repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Pins are as read from each
 consumer's `cyrius.cyml` on 2026-10-14, and every one is on **≥ 1.2.4**, so all carry the
 1.2.4 completion-injection fix.
 
@@ -304,32 +315,36 @@ consumer's `cyrius.cyml` on 2026-10-14, and every one is on **≥ 1.2.4**, so al
 - **ifran 2.2.1** — pinned `1.2.5`.
 - **dig 0.4.1** — pinned `1.2.4`. Tier-3 from the adoption review.
 - **commandress 1.1.8** — pinned `1.2.4`.
+- **sit 1.12.2** — pinned `1.4.0` (read 2026-10-28; it adopted cmdit at sit 1.9.0, after the
+  2026-10-14 read). Its `sit completions` prints `cmdit_completions` as is
+  (`src/main.cyr:258`), and its L11 report became 1.5.0.
 
-Only stiva calls `cmdit_completions`, and its handle is `cmdit_new("stiva")` (a literal).
-None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
+stiva and sit call `cmdit_completions`, each on a literal handle (`cmdit_new("stiva")`,
+`cmdit_new("sit")`). Neither was ever exposed to the 1.2.4 `argv[0]` injection.
 
 ## Next
 
-v1.0.0 froze the API; 1.1–1.4 are all append-only on it. Every gap the 2026-10-14 survey
-pinned shipped in 1.3.x, and 1.4.0 was the refactor and optimization sweep. **1.5.x is
-planned** in the [roadmap](roadmap.md): 1.5.0 makes the completion scripts complete file
-names (bash splits them, and fish completes none; sit L11). Consumer requests and issues
-take the next 1.5.x number.
+v1.0.0 froze the API; 1.1–1.5 are all append-only on it. Every gap the 2026-10-14 survey
+pinned shipped in 1.3.x, 1.4.0 was the refactor and optimization sweep, and 1.5.0 shipped
+the roadmap's last open item. **Nothing is open.** The [roadmap](roadmap.md)'s 1.5.x section
+is the intake: a consumer request or issue takes the next 1.5.x number.
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.4.2 are recommended**; its bundle is 1.4.0's code plus 1.4.2's
-  argv check. They bring the misparse fixes, the audit repairs, the token-naming error lines
-  and 1.4.0's speed (a parse about 2× faster, `--help` over 10×). None of the six breaks.
-  1.4.0's output is byte-identical to 1.3.7's; it now arrives in one write per call. A
-  consumer on cyrius 6.7.12+ also reads a command line past 2 MiB whole.
+- **Consumer re-pins to 1.5.0 are recommended.** They bring the misparse fixes, the audit
+  repairs, the token-naming error lines and 1.4.0's speed (a parse about 2× faster, `--help`
+  over 10×). None of the seven breaks. 1.4.0's output is byte-identical to 1.3.7's; it now
+  arrives in one write per call. A consumer on cyrius 6.7.12+ also reads a command line past
+  2 MiB whole (1.4.2).
+  - stiva and sit generate completions, and 1.5.0 is the fix sit reported: file names stay
+    whole in bash, and fish completes them at all. No test in either repo pins the old lines.
   - stiva, ifran, commandress and dig call `cmdit_print_error`, so their stderr lines now
     name the token; no test of theirs pins the old text.
   - kii and anuenue's `cmdit_error` switches print their generic line for
     `UNEXPECTED_VALUE` and `ARGV`; `cmdit_err_token` lets them name the token.
-  - stiva should re-pin first, for its marked `exec`. It is the one consumer that generates
-    completions; its scripts are unchanged until it attaches verb handles, apart from 1.3.7's
-    fish fix for a verb help ending in a backslash.
+  - stiva should re-pin first, for its marked `exec`. Its scripts change only by 1.3.7's fish
+    fix for a verb help ending in a backslash and 1.5.0's file lines, until it attaches verb
+    handles.
 
   The bundle compiles on pins as old as 6.6.2.
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each

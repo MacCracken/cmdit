@@ -128,6 +128,70 @@ fn capture_version(h, v, buf, cap): i64 {
     return n;
 }
 
+# --- 1.5.0: run a generated bash script for real -------------------------------
+# The substring checks pin the emitted lines; this pins what bash does with them.
+# Write all of cstr `s` to `fd`.
+fn pipe_write_all(fd, s): i64 {
+    var n = strlen(s);
+    var off = 0;
+    while (off < n) {
+        var w = syscall(1, fd, s + off, n - off);                 # write
+        if (w <= 0) { return 0 - 1; }
+        off = off + w;
+    }
+    return off;
+}
+
+# `bash -s` reads `script` and then `driver` from a pipe on its stdin, and its stdout
+# comes back in `out`. Only these fixed bytes reach bash: no argv and no command string
+# is built from anything. Both are a few KB against a 64 KB pipe buffer, so writing them
+# all before reading cannot block. Returns the bytes read, or -1 when /bin/bash is
+# missing or a pipe or fork fails.
+fn run_bash(script, driver, out, cap): i64 {
+    if (syscall(21, "/bin/bash", 1) != 0) { return 0 - 1; }      # access(X_OK)
+    var ip[8];                                                    # int fds[2]: bash's stdin
+    var op[8];                                                    # int fds[2]: bash's stdout
+    if (syscall(22, &ip) != 0) { return 0 - 1; }                  # pipe
+    if (syscall(22, &op) != 0) { return 0 - 1; }
+    var pid = syscall(57);                                        # fork
+    if (pid < 0) { return 0 - 1; }
+    if (pid == 0) {
+        syscall(33, load32(&ip), 0);                              # dup2: stdin
+        syscall(33, load32(&op + 4), 1);                          # dup2: stdout
+        syscall(3, load32(&ip));
+        syscall(3, load32(&ip + 4));
+        syscall(3, load32(&op));
+        syscall(3, load32(&op + 4));
+        var av[24];
+        store64(&av, "/bin/bash");
+        store64(&av + 8, "-s");
+        store64(&av + 16, 0);
+        var ev[16];
+        store64(&ev, "PATH=/usr/bin:/bin");
+        store64(&ev + 8, 0);
+        syscall(59, "/bin/bash", &av, &ev);                       # execve
+        syscall(60, 127);                                         # exit: only if exec failed
+    }
+    syscall(3, load32(&ip));
+    syscall(3, load32(&op + 4));
+    var wfd = load32(&ip + 4);
+    pipe_write_all(wfd, script);
+    pipe_write_all(wfd, driver);
+    syscall(3, wfd);
+    var rfd = load32(&op);
+    var n = 0;
+    var r = 1;
+    while (r > 0 && n < cap - 1) {
+        r = syscall(0, rfd, out + n, cap - 1 - n);                # read to EOF
+        if (r > 0) { n = n + r; }
+    }
+    syscall(3, rfd);
+    var st[8];
+    syscall(61, pid, &st, 0, 0);                                  # wait4
+    store8(out + n, 0);
+    return n;
+}
+
 # 1 when `hay` contains `needle` (both NUL-terminated).
 fn contains(hay, needle): i64 {
     var i = 0;
@@ -165,6 +229,26 @@ fn index_of(hay, needle): i64 {
         i = i + 1;
     }
     return 0 - 1;
+}
+
+# 1.5.0: append cstr `s` to the NUL-terminated string in `buf`.
+fn cat_cstr(buf, s): i64 {
+    var n = strlen(buf);
+    var k = strlen(s);
+    memcpy(buf + n, s, k);
+    store8(buf + n + k, 0);
+    return n + k;
+}
+
+# 1.5.0: 1 when `buf` holds the bash file branch, its three lines in a row and closing
+# the function.
+fn has_file_branch(buf): i64 {
+    var a = "    compopt -o filenames 2>/dev/null\n    COMPREPLY=()\n";
+    var b = "    while IFS= read -r w; do COMPREPLY+=( \"$w\" ); done < <(compgen -f -- \"$cur\")\n}\n";
+    var ia = index_of(buf, a);
+    if (ia < 0) { return 0; }
+    if (index_of(buf, b) != ia + strlen(a)) { return 0; }
+    return 1;
 }
 
 # parse: bool / int / str + positional (-c 5 --name bob file.txt)
@@ -3121,6 +3205,61 @@ fn g114_1_4_2_argv_past_2_mib(): i64 {
     return 0;
 }
 
+# 1.5.0 completion scripts complete file names (sit L11)
+fn g115_1_5_0_completion_files(): i64 {
+    test_group("1.5.0 completion scripts complete file names (sit L11)");
+    var cfb = alloc(16384);
+    var cfh = cmdit_new("t");
+    cmdit_verb(cfh, "x", "");
+    capture_completions(cfh, "bash", cfb, 16384);
+    assert(has_file_branch(cfb) == 1, "bash: one file name per line, and readline is told they are file names");
+    assert(contains(cfb, "$(compgen -f") == 0, "bash: no unquoted substitution of file names is left");
+    assert(index_of(cfb, "compopt") > index_of(cfb, "compgen -W \"$verbs\""),
+      "bash: compopt only in the file branch, so a verb never gets a directory's /");
+    var cfv = cmdit_new("t");
+    var cfvv = cmdit_verb(cfv, "x", "");
+    var cfvh = cmdit_new("t x");
+    cmdit_bool(cfvh, 0, "dry", "");
+    cmdit_verb_flags(cfv, cfvv, cfvh);
+    capture_completions(cfv, "bash", cfb, 16384);
+    assert(contains(cfb, "        case \"$verb\" in\n") == 1 && has_file_branch(cfb) == 1,
+      "bash: the same file branch in the layout that remembers the verb");
+    capture_completions(cfh, "fish", cfb, 16384);
+    assert(contains(cfb, "complete -c t -f\ncomplete -c t -n 'not __fish_use_subcommand' -F\n") == 1,
+      "fish: files come back once a verb is typed");
+    capture_completions(cfv, "fish", cfb, 16384);
+    assert(contains(cfb, "complete -c t -f\ncomplete -c t -n 'not __fish_use_subcommand' -F\n") == 1,
+      "fish: with per-verb flags too");
+    capture_completions(cfh, "zsh", cfb, 16384);
+    assert(contains(cfb, "    else\n        _files\n    fi\n") == 1, "zsh: _files, unchanged");
+
+    # Each line is one completion: the candidate count, then the candidates sorted, each
+    # in []. `my` then `g` in a row also shows COMPREPLY is reset on every call.
+    capture_completions(cfh, "bash", cfb, 16384);
+    var drv = alloc(2048);
+    store8(drv, 0);
+    cat_cstr(drv, "D=$(mktemp -d) || exit 3\ncd \"$D\" || exit 3\n");
+    cat_cstr(drv, ": > 'my file.txt'; : > 'g*'; : > gx; : > gy; : > ' lead'; : > 'b\\x'\n");
+    cat_cstr(drv, "cfr() {\n    COMP_WORDS=(t \"$@\"); COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 ))\n");
+    cat_cstr(drv, "    _t_complete\n    printf '%s:' \"${#COMPREPLY[@]}\"\n");
+    cat_cstr(drv, "    printf '%s\\n' \"${COMPREPLY[@]}\" | LC_ALL=C sort |\n");
+    cat_cstr(drv, "        while IFS= read -r c; do printf '[%s]' \"$c\"; done\n    printf '\\n'\n}\n");
+    cat_cstr(drv, "printf 'BEGIN\\n'\ncfr x my\ncfr x g\ncfr x ' l'\ncfr x b\ncfr ''\n");
+    cat_cstr(drv, "cd / && rm -rf \"$D\"\n");
+    var rbo = alloc(4096);
+    var rbn = run_bash(cfb, drv, rbo, 4096);
+    if (rbn < 0) {
+        println("  (skipped the bash run: no /bin/bash)");
+    } else {
+        assert(contains(rbo, "BEGIN\n1:[my file.txt]\n") == 1, "bash, run: a name with a space is one candidate");
+        assert(contains(rbo, "\n3:[g*][gx][gy]\n") == 1, "bash, run: a name with a * is not globbed");
+        assert(contains(rbo, "\n1:[ lead]\n") == 1, "bash, run: a leading space survives");
+        assert(contains(rbo, "\n1:[b\\x]\n") == 1, "bash, run: a backslash survives");
+        assert(contains(rbo, "\n1:[x]\n") == 1, "bash, run: the verb position still offers verbs, not files");
+    }
+    return 0;
+}
+
 # Run every test group against the pure parse/dispatch cores and the renderers. 1.4.0:
 # each group is its own function, so a fixture name no longer has to be unique across
 # the whole suite (one shared main made every collision a build error).
@@ -3240,6 +3379,7 @@ fn main() {
     g112_1_4_0_lazy_entry_table();
     g113_1_4_0_long_name_lookup();
     g114_1_4_2_argv_past_2_mib();
+    g115_1_5_0_completion_files();
     return assert_summary();
 }
 

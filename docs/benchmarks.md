@@ -10,6 +10,10 @@
 > interleaved against 6.7.9 builds of the same source, median of 15 at load average ~0.6. All
 > 13 benches were within ±4%, the code-layout band, so the 1.4.0 table stands. The per-bench
 > numbers are in the CHANGELOG's 1.4.1 entry.
+>
+> **1.5.0 (2026-10-28)** writes a longer bash and fish script: `completions_devnull` went
+> 13.97 → 14.32 µs (+2.5%) against 1.4.2, interleaved, median of 15 at load average ~0.4.
+> The other 12 were within ±3%.
 
 ## Method
 
