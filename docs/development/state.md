@@ -5,6 +5,14 @@
 
 ## Version
 
+**1.4.2** — built 2026-10-28. **A command line past 2 MiB is read whole on cyrius 6.7.12+.**
+`_cmdit_argv_whole` refuses only a read of exactly 2 MiB, where it used to refuse 2 MiB or
+more (audit SEC-7). A pre-6.7.12 `args_init` never returns more than 2 MiB, and 6.7.12+ reads
+to EOF, so only that one length is ambiguous. On real command lines up to 4 MB, a 6.7.9
+build of 1.4.2 refuses exactly what 1.4.0 refused, and a 6.7.18 build reads everything past
+2 MiB whole. No API, error-code or output change. The roadmap's open items are now planned
+as 1.5.x. **887 → 892 assertions**; 6/6 seeded mutants caught, and the control survives.
+
 **1.4.1** — built 2026-10-28. **Maintenance only; `src/cmdit.cyr` untouched.** Toolchain pin
 `6.7.9` → `6.7.18` and a full `cyrius lib sync --full --relock` (113 files, byte-identical to
 `6.7.18/lib`). Output is byte-identical (51 demo invocations, stdout, stderr and exit codes),
@@ -236,7 +244,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **887/887**, in 113 group functions (1.4.0; it was one ~2,300-line
+- `tests/cmdit.tcyr` — **892/892**, in 114 group functions (1.4.0; it was one ~2,300-line
   `main` whose fixture names all had to be unique). The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
@@ -246,7 +254,8 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   missing-value, `CMDIT_FLAGS_MAX`/`CMDIT_VERB_MAX` cap returns, `cmdit_new(0)`
   argv[0] adoption, and the C5/C3/C1 groups (`help_short`/`version_short` remap+disable,
   metavar, `require_positionals_max`/`_exact`). Env positives guard on `getenv("HOME")`.
-  1.4.0 adds the output-session, table-growth and lookup-equivalence groups.
+  1.4.0 adds the output-session, table-growth and lookup-equivalence groups, and 1.4.2 the
+  past-2-MiB argv group.
 - `tests/cmdit.bcyr` — **13 real benchmarks** (`cmdit_new` floor, register/parse
   subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate, the
   1.3.2 `verb_new_floor`, the 1.3.7 `flag_find_long`, and 1.4.0's `flag_find_long_36` over
@@ -302,15 +311,18 @@ None of the six was ever exposed to the 1.2.4 `argv[0]` injection.
 ## Next
 
 v1.0.0 froze the API; 1.1–1.4 are all append-only on it. Every gap the 2026-10-14 survey
-pinned shipped in 1.3.x, and 1.4.0 was the refactor and optimization sweep. **Nothing is
-scheduled.** The [roadmap](roadmap.md) is an open intake for consumer requests and issues.
+pinned shipped in 1.3.x, and 1.4.0 was the refactor and optimization sweep. **1.5.x is
+planned** in the [roadmap](roadmap.md): 1.5.0 makes the completion scripts complete file
+names (bash splits them, and fish completes none; sit L11). Consumer requests and issues
+take the next 1.5.x number.
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.4.1 are recommended**; its bundle is 1.4.0's code. They bring the
-  misparse fixes, the audit repairs, the token-naming error lines and 1.4.0's speed (a parse
-  about 2× faster, `--help` over 10×). None of the six breaks. 1.4.0's output is
-  byte-identical to 1.3.7's; it now arrives in one write per call.
+- **Consumer re-pins to 1.4.2 are recommended**; its bundle is 1.4.0's code plus 1.4.2's
+  argv check. They bring the misparse fixes, the audit repairs, the token-naming error lines
+  and 1.4.0's speed (a parse about 2× faster, `--help` over 10×). None of the six breaks.
+  1.4.0's output is byte-identical to 1.3.7's; it now arrives in one write per call. A
+  consumer on cyrius 6.7.12+ also reads a command line past 2 MiB whole.
   - stiva, ifran, commandress and dig call `cmdit_print_error`, so their stderr lines now
     name the token; no test of theirs pins the old text.
   - kii and anuenue's `cmdit_error` switches print their generic line for
@@ -320,11 +332,6 @@ Open, in rough order:
     fish fix for a verb help ending in a backslash.
 
   The bundle compiles on pins as old as 6.6.2.
-- **Resolved in cyrius 6.7.12:** stdlib `args_init` returned a prefix of a command line over
-  2 MiB with no error (cyrius
-  `docs/development/issues/archived/2026-10-14-args-init-truncates-argv-past-2-mib.md`). It now
-  reads to EOF. cmdit's fail-closed 2 MiB check (audit SEC-7) is still in place and is due a
-  revisit; see the [roadmap](roadmap.md#watching).
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
   is a site-by-site map from that repo's CLI code to cmdit calls. klug is not worth migrating.
   - **kriya and ark** carry an appended "Update — cmdit 1.4.0" (2026-10-14): kriya's

@@ -4,6 +4,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-10-28
+
+**A command line past 2 MiB is read whole on cyrius 6.7.12 and later.** The 1.3.2 check
+(audit SEC-7) refused any command line of 2 MiB or more, because stdlib `args_init` cut it
+there with no error. cyrius 6.7.12 resolved that issue, so the check now refuses only the one
+length that is still ambiguous. Consumers on older pins fail closed exactly as before. No API,
+error-code or output change. **887 → 892 assertions**; 6/6 seeded mutants caught, and the
+no-op control survives.
+
+### Changed
+
+- **`_cmdit_argv_whole` refuses `len == 2 MiB`, not `len >= 2 MiB`.** A pre-6.7.12 `args_init`
+  reads `/proc/self/cmdline` once into a 2,097,152-byte buffer, so it can never return more.
+  From 6.7.12 it reads to EOF. So any read longer than 2 MiB is whole under either stdlib, and
+  a read of exactly 2 MiB is the only one that may be a cut. That length stays
+  `CMDIT_ERR_ARGV`, because `dist/cmdit.cyr` compiles on pins as old as 6.6.2. On 6.7.12+, a
+  command line of exactly 2,097,152 bytes is the one false refusal.
+
+  A real command line can now reach 6 MiB, Linux's ARG_MAX ceiling, after an unprivileged
+  `ulimit -s` raise. The materialized array's slot cap (2^60 − 1) is far above any such argc.
+
+### Verification
+
+Real command lines under `ulimit -s 65536`, with a flag as the last argument (it shows up in
+the error only if the tail was read). Sizes are exact `/proc/self/cmdline` bytes; the
+arithmetic was checked by having `cat` read its own `/proc/self/cmdline`.
+
+| command line | 1.4.0, 6.7.9 stdlib | 1.4.2, 6.7.9 stdlib | 1.4.2, 6.7.18 stdlib |
+|---|---|---|---|
+| 1,900,000 B | whole | whole | whole |
+| 2,097,151 B | whole | whole | whole |
+| 2,097,152 B | refused | refused | refused |
+| 2,097,153 B | refused | refused | **whole** |
+| 2,500,000 B | refused | refused | **whole** |
+| 4,000,000 B | refused | refused | **whole** |
+
+The middle column is the older-pin consumer: identical to 1.4.0 at every size. The 1.3.2 audit
+scenario (30 arguments of 100,000 bytes, then `--loud`) gave exit 0, `loud = 1` and all 30
+positionals on 6.7.18. On 6.7.9 it is still `CMDIT_ERR_ARGV`.
+
+- **Tests.** A new group, `g114_1_4_2_argv_past_2_mib`: exactly 2 MiB is refused, and one byte
+  past it, a 3 MB read and 6 MiB are whole. A long read never stands in for a missing `argv[0]`.
+- **Mutation round.** Reverting to `>=`, dropping the check, moving it one byte either way,
+  inverting it to `>`, and weakening `n <= 0` to `n < 0` are each caught by the suite.
+- The suite, fuzz, both poison gates and `cyrius audit` pass. The 51-invocation demo transcript
+  is byte-identical to 1.4.1's, and the binaries are the same size. No benchmark covers the
+  check, which runs once per process.
+
+### Docs
+
+- The roadmap's open items are now planned as **1.5.x**. The sit completions item (bash splits
+  file names, and fish completes none) is 1.5.0. The cyrius `args_init` watch item is gone, now
+  that it is resolved and acted on. The v2 backlog and out-of-scope sections are unchanged.
+
 ## [1.4.1] - 2026-10-28
 
 **Maintenance: toolchain `6.7.9` → `6.7.18` and a full vendored-stdlib refresh.**
@@ -38,7 +92,7 @@ cmdit calls six stdlib functions directly (`alloc`, `strlen`, `args_init`, `argc
     `ulimit -s 65536`, 1.9 MB parses and 2.5 MB and 4.0 MB are `CMDIT_ERR_ARGV`, on both
     builds. `dist/cmdit.cyr` compiles on pins as old as 6.6.2, and below 6.7.12 the consumer's
     own `args_init` still truncates silently, so the check is what keeps those consumers failing
-    closed. See the [roadmap](docs/development/roadmap.md#watching).
+    closed. 1.4.2 narrows it to the one ambiguous length.
 - **`getenv`** and its loader `_env_load`: `x = x + 1` → `x += 1` rewrites only.
 - `alloc`, `strlen`, `argc`, `argv`, `sys_open` and `sys_close` are body-identical.
 

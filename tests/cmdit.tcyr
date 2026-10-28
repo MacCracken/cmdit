@@ -1895,9 +1895,10 @@ fn g095_1_3_2_trailing(): i64 {
 # 1.3.2 the argv bridge fails closed when argv cannot be read whole
 fn g096_1_3_2_argv(): i64 {
     test_group("1.3.2 the argv bridge fails closed when argv cannot be read whole");
-    # n <= 0: no argv[0], i.e. /proc/self/cmdline was unreadable. len >= 2 MiB: stdlib
-    # args_init's single read filled its buffer and may have cut the tail. Both used
-    # to parse as a short (or empty) argv and return CMDIT_OK.
+    # n <= 0: no argv[0], i.e. /proc/self/cmdline was unreadable. len == 2 MiB: a
+    # pre-6.7.12 stdlib args_init's single read filled its buffer and may have cut the
+    # tail (1.4.2 narrowed this from >=; see g114). Both used to parse as a short (or
+    # empty) argv and return CMDIT_OK.
     assert(_cmdit_argv_whole(0, 0) == 0, "no arguments at all -> not whole");
     assert(_cmdit_argv_whole(0 - 1, 0) == 0, "a negative count -> not whole");
     assert(_cmdit_argv_whole(3, 100) == 1, "an ordinary command line is whole");
@@ -3106,6 +3107,20 @@ fn g113_1_4_0_long_name_lookup(): i64 {
     return 0;
 }
 
+# 1.4.2 a command line past 2 MiB is whole; only an exact 2 MiB read is refused
+fn g114_1_4_2_argv_past_2_mib(): i64 {
+    test_group("1.4.2 a command line past 2 MiB is whole; only an exact 2 MiB read is refused");
+    # A pre-6.7.12 args_init reads at most 2,097,152 bytes, and a 6.7.12+ one reads to EOF,
+    # so any longer len came from a whole read. Exactly 2 MiB is the one ambiguous length:
+    # the bundle compiles on pins whose args_init cuts there.
+    assert(_cmdit_argv_whole(3, 2097152) == 0, "exactly 2 MiB may be a cut read -> not whole");
+    assert(_cmdit_argv_whole(3, 2097153) == 1, "one byte past 2 MiB: no truncating read returns it -> whole");
+    assert(_cmdit_argv_whole(32, 3000084) == 1, "a 3 MB read, as a 6.7.12+ args_init returns it -> whole");
+    assert(_cmdit_argv_whole(3, 6291456) == 1, "6 MiB, the ARG_MAX ceiling -> whole");
+    assert(_cmdit_argv_whole(0, 3000084) == 0, "a long read never stands in for a missing argv[0]");
+    return 0;
+}
+
 # Run every test group against the pure parse/dispatch cores and the renderers. 1.4.0:
 # each group is its own function, so a fixture name no longer has to be unique across
 # the whole suite (one shared main made every collision a build error).
@@ -3224,6 +3239,7 @@ fn main() {
     g111_1_4_0_lazy_verb_table();
     g112_1_4_0_lazy_entry_table();
     g113_1_4_0_long_name_lookup();
+    g114_1_4_2_argv_past_2_mib();
     return assert_summary();
 }
 

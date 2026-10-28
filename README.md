@@ -298,6 +298,12 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   demand, one write(2) per rendered help, error line or completion script, and faster
   long-name lookup. **887/887 tests**, 27/31 seeded reverts caught (the 4 survivors are
   unobservable).
+- **1.4.1** — maintenance: toolchain pin 6.7.18 + full vendored stdlib refresh, no source
+  change; output byte-identical.
+- **1.4.2** — a command line past 2 MiB is read whole on cyrius 6.7.12+ (its `args_init` now
+  reads to EOF); only an exact 2 MiB read, which an older stdlib may have cut, is still
+  `CMDIT_ERR_ARGV`. **892/892 tests**, 6/6 seeded mutants caught.
+- **1.5.x** — next: see the [roadmap](docs/development/roadmap.md).
 
 Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
 
@@ -306,6 +312,6 @@ Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (887/887)
+cyrius test                                          # run tests/*.tcyr  (892/892)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

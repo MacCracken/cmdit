@@ -1149,13 +1149,17 @@ var _cmdit_argv_n = 0;
 # 1 when a read of `n` arguments from a `len`-byte buffer can be trusted whole.
 # Pure, so the suite can drive it. n <= 0: no argv[0], which a real exec never
 # lacks (Linux >= 5.18 supplies an empty one), so the command line could not be
-# read (no /proc mounted, or args_init's alloc failed). len >= 2 MiB: stdlib
-# args_init reads /proc/self/cmdline ONCE into a fixed 2 MiB buffer, but ARG_MAX
-# rises with `ulimit -s`, so a longer command line is cut at 2 MiB, and every
-# whole token past the cut vanishes. Pass len 0 where it is not known.
+# read (no /proc mounted, or args_init's alloc failed). len == 2 MiB: before
+# cyrius 6.7.12, stdlib args_init read /proc/self/cmdline ONCE into a fixed 2 MiB
+# buffer, but ARG_MAX rises with `ulimit -s`, so a longer command line came back
+# as its first 2 MiB with every whole token past the cut gone. That read can never
+# return MORE than 2 MiB, and from 6.7.12 args_init reads to EOF, so a longer len
+# is whole under either stdlib. Only a read of exactly 2 MiB is ambiguous, and the
+# bundle still compiles on pins that truncate, so that one length stays refused
+# (1.4.2; it was len >= 2 MiB). Pass len 0 where it is not known. CHANGELOG [1.4.2].
 fn _cmdit_argv_whole(n, len): i64 {
     if (n <= 0) { return 0; }
-    if (len >= 2097152) { return 0; }
+    if (len == 2097152) { return 0; }
     return 1;
 }
 
