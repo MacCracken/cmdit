@@ -5,6 +5,14 @@
 
 ## Version
 
+**1.4.1** — built 2026-10-28. **Maintenance only; `src/cmdit.cyr` untouched.** Toolchain pin
+`6.7.9` → `6.7.18` and a full `cyrius lib sync --full --relock` (113 files, byte-identical to
+`6.7.18/lib`). Output is byte-identical (51 demo invocations, stdout, stderr and exit codes),
+and all 13 benchmarks are within ±4% (layout noise). Binaries are +4,120 B, all but 24 B of it
+unreachable stdlib. The one stdlib change on cmdit's path is `args_init` reading to EOF
+(6.7.12), which resolves cmdit's SEC-7 issue; cmdit's own 2 MiB check stays for consumers on
+older pins. **887/887**.
+
 **1.4.0** — built 2026-10-14. **Refactor and optimization sweep**; no API, error-code or
 output change (a 20,724-byte fixture of every renderer diffed against 1.3.7 after each step).
 
@@ -190,9 +198,9 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Toolchain
 
-- **Cyrius pin**: `6.7.9` (in `cyrius.cyml [package].cyrius`) — CI derives the
+- **Cyrius pin**: `6.7.18` (in `cyrius.cyml [package].cyrius`) — CI derives the
   toolchain from it, so there is no version to sync in the workflow YAML.
-- **Vendored `lib/`**: 113 files, exactly `6.7.9/lib` (`cyrius lib sync --full --relock`),
+- **Vendored `lib/`**: 113 files, exactly `6.7.18/lib` (`cyrius lib sync --full --relock`),
   hash-pinned in `cyrius.lock`. A drift in either direction warns on every build, and both
   warnings are currently silent.
 - **On a pin move**, run `cyrius lib sync --full --relock` *before* the first build. A build
@@ -299,10 +307,10 @@ scheduled.** The [roadmap](roadmap.md) is an open intake for consumer requests a
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.4.0 are recommended.** They bring the misparse fixes, the audit
-  repairs, the token-naming error lines and 1.4.0's speed (a parse about 2× faster, `--help`
-  over 10×). None of the six breaks. 1.4.0's output is byte-identical to 1.3.7's; it now
-  arrives in one write per call.
+- **Consumer re-pins to 1.4.1 are recommended**; its bundle is 1.4.0's code. They bring the
+  misparse fixes, the audit repairs, the token-naming error lines and 1.4.0's speed (a parse
+  about 2× faster, `--help` over 10×). None of the six breaks. 1.4.0's output is
+  byte-identical to 1.3.7's; it now arrives in one write per call.
   - stiva, ifran, commandress and dig call `cmdit_print_error`, so their stderr lines now
     name the token; no test of theirs pins the old text.
   - kii and anuenue's `cmdit_error` switches print their generic line for
@@ -312,8 +320,11 @@ Open, in rough order:
     fish fix for a verb help ending in a backslash.
 
   The bundle compiles on pins as old as 6.6.2.
-- **Filed against cyrius:** stdlib `args_init` returns a prefix of a command line over 2 MiB
-  with no error (cyrius `docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`). cmdit fails closed meanwhile (audit SEC-7).
+- **Resolved in cyrius 6.7.12:** stdlib `args_init` returned a prefix of a command line over
+  2 MiB with no error (cyrius
+  `docs/development/issues/archived/2026-10-14-args-init-truncates-argv-past-2-mib.md`). It now
+  reads to EOF. cmdit's fail-closed 2 MiB check (audit SEC-7) is still in place and is due a
+  revisit; see the [roadmap](roadmap.md#watching).
 - **Adoption notes are filed in the 18 hand-rolled candidates' roadmaps** (2026-10-14). Each
   is a site-by-site map from that repo's CLI code to cmdit calls. klug is not worth migrating.
   - **kriya and ark** carry an appended "Update — cmdit 1.4.0" (2026-10-14): kriya's
@@ -324,7 +335,7 @@ Open, in rough order:
     phylax, agnova) and stop-at-positional as a blocker (shakti). shakti's note calls it
     blocked, but neither of its two cmdit blockers remains.
   - bannermanor, klug, shakti, yo, kriya and cyim also carry an "Update — cmdit 1.3.1".
-- **Tooling noise is at zero; keep it there.** Under 6.7.9, `cyrius audit` is clean on every
+- **Tooling noise is at zero; keep it there.** Under 6.7.18, `cyrius audit` is clean on every
   stage, and `fmt --check` / `lint` / `doc --check` are clean on all seven sources.
 - **v2 backlog** — see [`roadmap.md`](roadmap.md).
 

@@ -4,6 +4,75 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-28
+
+**Maintenance: toolchain `6.7.9` → `6.7.18` and a full vendored-stdlib refresh.**
+`src/cmdit.cyr` is untouched, and every byte cmdit prints is the same: 51 invocations of
+smoke, verbs and completions (13,792 bytes of stdout, stderr and exit codes) are identical
+between the 6.7.9 and 6.7.18 builds. **887/887** assertions, fuzz, both poison gates, and
+`cyrius audit` is clean on every stage.
+
+### Changed
+
+- **Toolchain pin `6.7.9` → `6.7.18`.** CI reads it from `cyrius.cyml`, so no workflow edit.
+- **`cyrius lib sync --full --relock`**, run before the first build under the new pin,
+  re-vendored `lib/`: 113 files, byte-identical to `6.7.18/lib`. 66 were modified; none are new
+  or removed. `cyrius deps --verify` checks all 113 against `cyrius.lock`. cmdit has no
+  `[deps.X]`, so the stdlib is its only vendored library.
+- **`dist/` regenerated.** Only the `# Version:` line changed: `distlib --check` already found
+  the bundle current under 6.7.18. Consumer-side check: the suite and smoke were built against
+  `dist/cmdit.cyr` instead of `src/`. All 887 assertions pass, and smoke is the same size
+  either way.
+
+### Stdlib delta on cmdit's call surface
+
+cmdit calls six stdlib functions directly (`alloc`, `strlen`, `args_init`, `argc`, `argv`,
+`getenv`), which reach 83 across all targets. On Linux x86_64:
+
+- **`args_init`** (stdlib 6.7.12) reads `/proc/self/cmdline` to EOF, growing a heap buffer from
+  2 MiB, and on failure returns a negative errno and publishes nothing. This resolves the issue
+  cmdit filed from its 1.3.2 audit (SEC-7), now archived in cyrius as resolved. cmdit never read
+  the return value; a failed read still leaves `argc()` at 0, which is still `CMDIT_ERR_ARGV`.
+  - **cmdit's own 2 MiB check stays.** `_cmdit_argv_whole` still refuses a command line of
+    2 MiB or more, even one the stdlib now reads whole. On real command lines under
+    `ulimit -s 65536`, 1.9 MB parses and 2.5 MB and 4.0 MB are `CMDIT_ERR_ARGV`, on both
+    builds. `dist/cmdit.cyr` compiles on pins as old as 6.6.2, and below 6.7.12 the consumer's
+    own `args_init` still truncates silently, so the check is what keeps those consumers failing
+    closed. See the [roadmap](docs/development/roadmap.md#watching).
+- **`getenv`** and its loader `_env_load`: `x = x + 1` → `x += 1` rewrites only.
+- `alloc`, `strlen`, `argc`, `argv`, `sys_open` and `sys_close` are body-identical.
+
+### Binary size: +4 KB, all but 24 bytes unreachable stdlib
+
+`cmdit-smoke` grew 172,256 → 176,376 B, and each of the six artifacts grew by the same 4,120 B.
+With `CYRIUS_DCE=1` the live code went 53,472 → 53,496 B (+24 B). The rest is unreachable
+stdlib (513 → 526 unreachable fns), which the opt-in DCE pass drops.
+
+### Benchmarks
+
+The same source built under each toolchain, run interleaved, median of 15, at load average
+~0.6 (ns):
+
+| bench | 6.7.9 | 6.7.18 | change |
+|---|---|---|---|
+| `cmdit_new_floor` | 729 | 752 | +3.2% (ranges overlap: 691–1006 / 709–921) |
+| `setup_baseline` | 724 | 723 | −0.1% |
+| `parse_argv_mixed` | 1075 | 1085 | +0.9% |
+| `get_enum_rewalk` | 96 | 95 | −1.0% |
+| `dispatch_before_verb` | 162 | 156 | −3.7% |
+| `dispatch_after_verb` | 172 | 167 | −2.9% |
+| `repeat_accumulate_32` | 1760 | 1770 | +0.6% |
+| `verb_new_floor` | 780 | 772 | −1.0% |
+| `flag_find_long` | 46 | 46 | 0 |
+| `flag_find_long_36` | 147 | 151 | +2.7% |
+| `help_fd_devnull` | 2825 | 2781 | −1.6% |
+| `print_error_devnull` | 747 | 758 | +1.5% |
+| `completions_devnull` | 14346 | 13941 | −2.8% |
+
+All 13 are within ±4%. That is the code-layout band 1.4.0 measured for unchanged code
+(`get_enum_rewalk`, 95–101 ns from padding alone), and the 4 KB of new stdlib shifts the
+layout.
+
 ## [1.4.0] - 2026-10-14
 
 **Refactor and optimization sweep: no new API, byte-identical output, and faster.** Every

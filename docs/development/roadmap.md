@@ -45,11 +45,15 @@ its own side if it must.
 
 ## Watching
 
-- **cyrius: `args_init` truncates a command line over 2 MiB, with no error** (ARG_MAX rises
+- **cyrius: `args_init` truncated a command line over 2 MiB, with no error** (ARG_MAX rises
   with `ulimit -s`). Filed as cyrius
-  `docs/development/issues/2026-10-14-args-init-truncates-argv-past-2-mib.md`, for cyrius to
-  place and repair. Since 1.3.2, cmdit fails closed with `CMDIT_ERR_ARGV` instead of parsing
-  the prefix (audit SEC-7). Revisit that check when the issue closes.
+  `docs/development/issues/archived/2026-10-14-args-init-truncates-argv-past-2-mib.md`.
+  **Resolved in cyrius 6.7.12**: `args_init` reads to EOF. cmdit pins 6.7.18 since 1.4.1.
+  Since 1.3.2, cmdit fails closed with `CMDIT_ERR_ARGV` instead of parsing the prefix (audit
+  SEC-7), and the check is still in place: `_cmdit_argv_whole` refuses 2 MiB or more, so a
+  command line the stdlib now reads whole is still refused. **The revisit is due.** The
+  constraint: `dist/cmdit.cyr` compiles on pins as old as 6.6.2, and a consumer below 6.7.12
+  still gets the truncating `args_init`. For that consumer the check is the only protection.
 
 ## Adoption — demand-gated, not a forced sweep
 

@@ -5,6 +5,11 @@
 > [`tests/cmdit.bcyr`](../tests/cmdit.bcyr) (stdlib `lib/bench.cyr`). Reproduce with
 > `cyrius build tests/cmdit.bcyr build/cmdit-bench && ./build/cmdit-bench`.
 > The v1.0 capture is accounted for in [the bisect](#where-the-v10-numbers-went) below.
+>
+> **1.4.1 (toolchain 6.7.18, 2026-10-28)** did not change the source. Its builds ran
+> interleaved against 6.7.9 builds of the same source, median of 15 at load average ~0.6. All
+> 13 benches were within ±4%, the code-layout band, so the 1.4.0 table stands. The per-bench
+> numbers are in the CHANGELOG's 1.4.1 entry.
 
 ## Method
 
