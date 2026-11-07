@@ -5,7 +5,7 @@
 > flags, parse argv, and print `--help`/`--version`, instead of hand-rolling it
 > on top of the bare `args` primitive.
 
-**Status:** v1.5.0 — public API frozen at 1.0.0; everything since is append-only on it
+**Status:** v1.5.1 — public API frozen at 1.0.0; everything since is append-only on it
 (1.1.0 `cmdit_help_flags`; 1.2.0 verb introspection + shell completions; 1.2.2 verb
 command-line forwarding). 1.2.5–1.2.6 are toolchain refreshes; 1.3.0 makes `cmdit_new` ~6×
 faster; 1.3.1 stops two silent misparses (positionals past 128, `--bool=0`); 1.3.2 is an
@@ -16,7 +16,9 @@ four small modifiers (once-only, case-insensitive choices, a second long name, r
 flag-shaped value); 1.3.7 adds flag-table introspection and per-verb flags in completions;
 1.4.0 is a refactor and speed sweep with no API or output change (a parse ~2× faster,
 `--help` over 10×); 1.4.1 moves to cyrius 6.7.18; 1.4.2 reads a command line past 2 MiB whole
-on 6.7.12+; 1.5.0 makes the bash and fish completion scripts complete file names whole.
+on 6.7.12+; 1.5.0 makes the bash and fish completion scripts complete file names whole;
+1.5.1 gives a tool with no verbs a working completion script, adds
+`cmdit_continue_on_error`, and stops C1 controls in error lines.
 **1.2.4 is a security release** — the completion generator interpolated
 the program name, which on the `cmdit_new(0)` path comes from `argv[0]`, raw into the
 scripts it emits; it also closes three memory-safety/contract defects. No API change.
@@ -169,7 +171,10 @@ constants, not API (do not depend on their values).
   (`--root --dry-run` is a missing value, not root = `--dry-run`); verbs `cmdit_verb` / `cmdit_verb_alias`; auto-flag config
   `cmdit_help_short` / `cmdit_version_short`; `cmdit_stop_at_positional(h, on)` (1.3.4:
   POSIX — option recognition stops at the first positional, for tools whose operands are
-  another command line: `sudo`-shaped, `xargs`, `env`, `nice`).
+  another command line: `sudo`-shaped, `xargs`, `env`, `nice`);
+  `cmdit_continue_on_error(h, on)` (1.5.1: parse on past a bad token, for a tool that must
+  act on what it understood. The result is still `CMDIT_RESULT_ERR`, and `cmdit_error` names
+  the first error).
 - **Read:** `cmdit_get_bool` / `cmdit_get_int` / `cmdit_get_str` / `cmdit_get_enum`,
   `cmdit_seen`, `cmdit_repeat_count` / `cmdit_repeat_get`, `cmdit_positional` /
   `cmdit_positional_count`, `cmdit_verb_matched` / `cmdit_verb_argc` /
@@ -193,7 +198,8 @@ constants, not API (do not depend on their values).
   The three help renderers write stderr; `cmdit_help_fd` / `cmdit_help_flags_fd` /
   `cmdit_verbs_help_fd(h, fd)` take the stream (1.3.5) — pass 1 for GNU-style `--help` on
   stdout. `cmdit_completions(h, shell)` writes a bash, zsh or fish completion script to
-  stdout (1.2.0; per-verb flags 1.3.7; file names kept whole in bash and fish 1.5.0).
+  stdout (1.2.0; per-verb flags 1.3.7; file names kept whole in bash and fish 1.5.0). A tool
+  with no verbs gets a flags-and-files script, with an enum's choices after its flag (1.5.1).
 - **Result codes:** `CMDIT_OK` / `CMDIT_HELP` / `CMDIT_VERSION` / `CMDIT_RESULT_ERR`.
   **Exit codes:** `CMDIT_EXIT_OK` (0) / `CMDIT_EXIT_RUN` (1) / `CMDIT_EXIT_USAGE` (2).
   Note the two namespaces collide by value on purpose (`CMDIT_OK` = `CMDIT_EXIT_OK`
@@ -309,15 +315,21 @@ Callers that drive `cmdit_parse_argv` directly don't invoke either.
   spaces or globs it (and quotes what it inserts, bash 4+), and fish completes files after the
   verb. The suite now runs the generated bash script. Reported by sit. **904/904 tests**, 9/9
   seeded mutants caught.
+- **1.5.1** — three consumer reports. A tool with no verbs gets a completion script that
+  works: the first argument completes files in all three shells, zsh and fish complete its
+  flags, and an enum offers its choices (owl). `cmdit_continue_on_error` keeps parsing past a
+  bad token, and the first error is the one reported (commandress). Error lines show C1
+  controls as `?` and keep real UTF-8 (commandress). **1086/1086 tests**, 82/85 seeded
+  mutants caught; run in real bash, zsh and fish.
 - **1.5.x** — the intake for what comes next: see the [roadmap](docs/development/roadmap.md).
 
-Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress** — all on `[deps.cmdit]`.
+Consumers: **kii**, **anuenue**, **ifran**, **stiva**, **dig**, **commandress**, **sit**, **owl** — all on `[deps.cmdit]`.
 
 ## Build
 
 ```sh
 cyrius build programs/smoke.cyr build/cmdit-smoke   # compile-link smoke / demo
 cyrius distlib                                       # produce dist/cmdit.cyr
-cyrius test                                          # run tests/*.tcyr  (904/904)
+cyrius test                                          # run tests/*.tcyr  (1086/1086)
 cyrius build tests/cmdit.bcyr build/cmdit-bench      # build + run the benchmarks
 ```

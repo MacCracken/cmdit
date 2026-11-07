@@ -4,6 +4,142 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-06
+
+**Three consumer reports closed.** A tool with no verbs gets a completion script that works
+(owl), `cmdit_continue_on_error` keeps parsing past a bad token (commandress D-05), and the
+error escaper stops C1 controls (commandress D-06). Append-only: one new setter, off by
+default, and no error code changes. A tool with a verb to offer gets its 1.5.0 scripts byte
+for byte. **904 → 1086 assertions**; 82/85 seeded mutants caught, the 3 survivors are
+unobservable or unreachable, and the control survives.
+
+### Added
+
+- **`cmdit_continue_on_error(h, on)`**: keep parsing past a bad token, for a tool that must
+  act on what it understood and cannot just exit. commandress renders a shell prompt, and
+  `cmdrs --bogus --side=right` lost the `--side`. Off by default, so a tool that exits on a
+  bad flag sees no change.
+  - **The parse still fails.** `cmdit_parse`, `cmdit_dispatch` and their `_argv` cores return
+    `CMDIT_RESULT_ERR` for any argv a plain parse would. The fuzz harness pins that: result and
+    all four error fields match a plain parse of the same argv (I10).
+  - **The first error stands.** `cmdit_error`, `cmdit_err_flag`, `cmdit_err_token` and
+    `cmdit_err_value` keep naming it, past later bad tokens, `cmdit_finalize` and the
+    positional gates, until the next parse.
+  - **An error outranks help.** `--bogus --help` reports `--bogus`, not `CMDIT_HELP`.
+  - **Where a bad token resumes.** An unknown flag or a bundled short ends at itself, so
+    `--bogus y` leaves `y` a token of its own, which needs no knowledge of a flag nobody
+    registered. A registered flag keeps its grammar: the value it took and rejected
+    (`--count abc`) is consumed, and a value `cmdit_reject_flag_value` refused was never taken.
+  - **Both parse cores.** They share `_cmdit_take_flag`, and a setter one of them ignored would
+    fail silently. An unknown verb fills the verb's slot: `cmdit_verb_matched` stays -1, no
+    later word is read as the verb, and a global after it still applies.
+  - **`CMDIT_ERR_NOMEM` still stops the parse.** It is not a fact about a token.
+
+### Fixed
+
+- **A tool with no verbs gets a completion script that works.** All three emitters assumed the
+  first non-flag word was a verb, so a tool with flags and files (owl) completed nothing in
+  its first argument, and installing the script was worse than having none. zsh and fish
+  completed no flag either. The verb-less shape applies when there is no verb to offer: none
+  registered, every one hidden, or every name dropped by the whitelist.
+  - **bash** goes straight to its file branch, with no verb walk.
+  - **zsh** hands the flag table to `_arguments`: short and long spellings, help, `*` so a
+    repeat flag stays on offer, `--name=` because cmdit takes both value forms, and `-S`
+    because the parser stops at `--`. A str value completes files; an int offers nothing.
+  - **fish** drops the global `-f` and adds one `complete` line per flag.
+  - **All three offer an enum's choices.** `--color <TAB>` completes `auto always never` in
+    bash, and so do `--color=<TAB>` and `--color=al<TAB>`. fish uses `-x -a`, because `-r -a`
+    lists every file beside the choices.
+  - **Choices pass the verb-name whitelist.** `compgen -W`, fish's `-a` and zsh's `(...)` action
+    all expand their text at TAB time (`_arguments` runs an `eval`), so a choice holding
+    `$(cmd)` would have run. One that fails is dropped whole.
+- **The escaper stops C1 controls.** `_cmdit_print_esc` filtered C0 and DEL and passed every
+  byte from 0x80 up, but `C2 9B` is U+009B, CSI in one character, and needs no ESC byte.
+  `C2 80..9F` and any bare `80..9F` now show as one `?` each. A plain test on 80..9F would have
+  mangled real names, since those are continuation bytes too (`ě` is `C4 9B`), and so would
+  "follows a lead byte" (`E0 A4 9B`). So the string is walked a character at a time against
+  Unicode's table of well-formed sequences, which also refuses the overlong forms of ESC and
+  CSI (`C0 9B`, `E0 82 9B`). The change reaches every line that shows argv: the token, a
+  rejected value, and `argv[0]` in errors, help and version.
+  - **Two things a terminal cannot have both of.** In 8-bit mode a terminal reads the last byte
+    of real UTF-8 as a control, and a name in a legacy encoding (Shift-JIS, say) loses its
+    80..9F bytes to `?`. UTF-8 is the case that matters.
+
+### Changed
+
+- ctx 192 → 200 B, append-only (`CMDIT_CTX_SIZE`, internal per ADR-0003).
+- `_cmdit_check_required` returns the entry instead of storing `err_entry` itself, which would
+  have replaced the entry of a first error that continue mode keeps.
+- `_cmdit_verb_offered` is the one test for naming a verb in a script, where bash, zsh and fish
+  each carried a copy. The verb-less choice uses it too, so the scripts cannot pick the verb
+  layout for a list they then leave empty.
+
+### Verification
+
+**Before and after, in real shells.** bash and zsh through a pty, zsh with `compinit`, and
+fish 4.9.3 by its own `complete -C`. The tool has one flag table and no verbs:
+
+| typed | 1.5.0, all three | 1.5.1, all three |
+|---|---|---|
+| `tool <TAB>` | nothing | the files |
+| `tool al<TAB>` | nothing | `alpha.txt` |
+| `tool -n al<TAB>` | nothing | `alpha.txt` |
+| `tool my<TAB>` | nothing | `my file.txt`, whole |
+| `tool --color <TAB>` | nothing | `auto always never` |
+| `tool --color=al<TAB>` | nothing | `always` |
+| `tool --output=al<TAB>` | nothing | `alpha.txt` |
+
+- **fish ran for the first time.** Arch's package, hash-checked against the pacman sync
+  database and unpacked into a scratch directory; nothing was installed. It also confirms
+  1.5.0's verb-tool line, which had rested on the docs: `demo-app run al<TAB>` gives
+  `alpha.txt`.
+- **A tool with a verb is unchanged.** 66 invocations of the smoke, verbs and completions demos
+  (scripts in all three shells, help, version, every error shape) match a 1.5.0 build on
+  stdout, stderr and exit code.
+- **Three new groups, `g116`–`g118`.** The escaper's runs the real function over 1,118,480 hostile
+  strings and every pair of bytes, against an oracle that decodes and tests the code point
+  where the library tests byte ranges, and against a sloppy decoder that takes overlong forms.
+  The zsh script is sourced under a stub `_arguments`, so the quoting is checked as zsh parses
+  it, and the suite skips that with a note where `/bin/zsh` is missing.
+- **Two new fuzz invariants.** I10, a continued parse against a plain one in both cores; I11,
+  the escaper's real output read back from a pipe, for every argv token and for hostile strings
+  up to 24 bytes.
+- **Mutation round.** 82/85 seeded mutants caught, with the fuzz harness catching 20 of them
+  independently. The 3 survivors: a value missing at the end of argv stops the loop either
+  way, `alloc` already zeroes the new field, and no caller passes a 0 choice list. The first
+  round left two real test gaps, a check for `case` that could not see a lone `esac` and a
+  sweep with no byte past `F4`, and both are closed.
+- `cyrius audit`, `fmt --check`, `lint` and `doc --check` are clean, both poison gates pass, and
+  the suite passes against `dist/cmdit.cyr`.
+
+### Benchmarks
+
+Interleaved 1.5.0 against 1.5.1, median of 15, at load average ~2.0.
+
+| Bench | 1.5.0 | 1.5.1 | |
+|---|---|---|---|
+| `parse_argv_mixed` | 1.167 µs | 1.168 µs | a parse pays one load |
+| `print_error_devnull` | 766 ns | 773 ns | +0.9%, an ASCII token |
+| `print_error_utf8_devnull` (new) | 690 ns | 764 ns | +10.7%, the walk over a 39-byte non-ASCII token |
+| `completions_verbless_devnull` (new) | 11.4 µs | 40.2 µs | owl's table: the scripts now hold its 23 flags |
+| `completions_devnull` | 14.77 µs | 15.13 µs | +2.4%, a tool with verbs |
+
+`get_enum_rewalk` went 95 → 100 ns on code this release did not touch, and dispatch went +3%.
+Both are where the code landed: unused padding functions in unchanged 1.5.0 moved
+`get_enum_rewalk` over 97–101 ns, `dispatch_before_verb` over 169–184 and `dispatch_after_verb`
+over 182–200. In that run 1.5.1 measured 173 and 185 for dispatch, inside the band, and 103 for
+`get_enum_rewalk`, 2 ns past what six layouts reached, with no change on its path. The other 7
+are within ±3.1%.
+
+Binaries grow: smoke's text segment is +6,080 B, or +1,656 B with `CYRIUS_DCE=1`, which leaves
+out the completion emitters of a tool that never calls them.
+
+### Docs
+
+- The three reports are resolved and moved to `docs/development/issues/archived/`, as in the
+  sibling repos, and the roadmap has nothing open.
+- `state.md` and the README add owl as a consumer, and `state.md` refreshes commandress's pin.
+
 ## [1.5.0] - 2026-10-28
 
 **The completion scripts complete file names.** After a verb, bash split a file name at

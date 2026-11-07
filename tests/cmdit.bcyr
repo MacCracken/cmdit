@@ -245,6 +245,65 @@ fn main(): i64 {
     syscall(3, so1);
     bench_report(b13);
 
+    # 1.5.1: an error line for a non-ASCII token, the escaper's own path. The token is a
+    # file name of the kind the line exists to show, with no control in it.
+    var hpu = cmdit_new("tool");
+    var apu = alloc(3 * 8);
+    store64(apu, "tool");
+    store64(apu + 8, "--prěkladač-日本語-資料-😀.txt");
+    store64(apu + 16, 0);
+    cmdit_parse_argv(hpu, 2, apu);
+    var se3 = syscall(32, 2);
+    syscall(33, nul, 2);
+    var b14 = bench_new("print_error_utf8_devnull");
+    bench_batch_start(b14);
+    var i14 = 0;
+    while (i14 < OUT) { cmdit_print_error(hpu); i14 = i14 + 1; }
+    bench_batch_stop(b14, OUT);
+    syscall(33, se3, 2);
+    syscall(3, se3);
+    bench_report(b14);
+
+    # 1.5.1: a tool with no verbs. owl's flag table as registered in src/main.cyr, so the
+    # zsh spec walk and the enum arms run over a real 21 flags.
+    var hl = cmdit_new("owl");
+    cmdit_bool(hl, 110, "number", "force line numbers on");
+    cmdit_bool(hl, 78, "no-number", "force line numbers off");
+    cmdit_bool(hl, 112, "plain", "plain output, cat-identical");
+    cmdit_bool(hl, 65, "show-all", "show non-printables");
+    cmdit_bool(hl, 120, "hex", "xxd-style hex dump");
+    cmdit_bool(hl, 0, "diff", "show only changed lines");
+    cmdit_bool(hl, 102, "follow", "keep rendering as the file grows");
+    cmdit_bool(hl, 114, "raw-control-chars", "pass file escapes through");
+    cmdit_bool(hl, 118, "verbose", "with --version, print pins");
+    cmdit_bool(hl, 0, "list-themes", "list themes");
+    cmdit_bool(hl, 0, "list-languages", "list languages");
+    cmdit_enum(hl, 0, "color", 0, "auto|always|never", "when to colour");
+    cmdit_enum(hl, 0, "strip-ansi", 0, "auto|always|never", "when to strip file escapes");
+    cmdit_enum(hl, 0, "format", 0, "text|ndjson|auto", "output format");
+    cmdit_str(hl, 0, "paging", 0, "when to page");
+    cmdit_str(hl, 0, "style", 0, "gutter VCS markers");
+    cmdit_str(hl, 0, "theme", 0, "syntax theme");
+    cmdit_str(hl, 0, "language", 0, "force the language");
+    cmdit_str(hl, 0, "tabs", 0, "tab width");
+    cmdit_str(hl, 0, "wrap", 0, "line wrapping");
+    cmdit_str(hl, 0, "line-range", 0, "lines A:B");
+    var so2 = syscall(32, 1);
+    syscall(33, nul, 1);
+    var b15 = bench_new("completions_verbless_devnull");
+    bench_batch_start(b15);
+    var i15 = 0;
+    while (i15 < OUTC) {
+        cmdit_completions(hl, "bash");
+        cmdit_completions(hl, "zsh");
+        cmdit_completions(hl, "fish");
+        i15 = i15 + 1;
+    }
+    bench_batch_stop(b15, OUTC);
+    syscall(33, so2, 1);
+    syscall(3, so2);
+    bench_report(b15);
+
     return 0;
 }
 

@@ -5,6 +5,26 @@
 
 ## Version
 
+**1.5.1** — built 2026-11-06. **Three consumer reports closed; append-only.**
+
+- **A tool with no verbs gets a working completion script** (owl). The first argument
+  completed nothing in any shell, and zsh and fish completed no flag. Now bash goes straight
+  to its file branch, zsh hands the flag table to `_arguments`, and fish keeps files on with
+  one line per flag. All three offer an enum's choices. A tool with a verb to offer keeps its
+  1.5.0 script byte for byte.
+- **`cmdit_continue_on_error(h, on)`** (commandress D-05): parse on past a bad token, in both
+  parse cores. The result is still `CMDIT_RESULT_ERR`, the first error stands, and it outranks
+  a later `--help`. Off by default. ctx 192 → 200 B.
+- **The escaper stops C1 controls** (commandress D-06). `C2 9B` is CSI in one character, and
+  it reached stderr unchanged. A strict UTF-8 walk replaces it and keeps every real character.
+
+Run in real bash and zsh through a pty, and in real fish through `complete -C`, for the first
+time (Arch's 4.9.3, unpacked into a scratch directory). That also confirmed 1.5.0's fish line,
+which had rested on the docs.
+A parse is unchanged (1.167 → 1.168 µs), and an error line for a non-ASCII token is +10.7%. **904 →
+1086 assertions**; 82/85 seeded mutants caught, the 3 survivors are unobservable or
+unreachable, and the control survives.
+
 **1.5.0** — built 2026-10-28. **The completion scripts complete file names** (sit L11). bash
 read `$(compgen -f)` unquoted, so a file name split at its spaces and globbed; it now reads
 compgen a line at a time, with `compopt -o filenames` in the file branch only. fish completed
@@ -231,7 +251,8 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   flag modifiers; 0.3.0 verb dispatch; 1.0.0 `help_short`/`version_short` + `metavar`
   + `require_positionals_max`/`_exact`; 1.1.0 `help_flags`; 1.2.0 verb introspection +
   `cmdit_completions`; 1.2.2 `verb_trailing_after`; the 1.3.x survey items through 1.3.7's
-  flag introspection and per-verb completion flags). Entry **120 B**, ctx **192 B**, verb
+  flag introspection and per-verb completion flags; 1.5.1 `continue_on_error` and the
+  verb-less completion scripts). Entry **120 B**, ctx **200 B**, verb
   row **48 B**, all append-only. Every field is addressed through the private
   `CmditOffset` names (1.4.0); the layout comment at the top of the source has every
   offset. The flag table starts at 16 entries and the verb table at 16 rows, each doubling
@@ -253,7 +274,7 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Tests
 
-- `tests/cmdit.tcyr` — **904/904**, in 115 group functions (1.4.0; it was one ~2,300-line
+- `tests/cmdit.tcyr` — **1086/1086**, in 118 group functions (1.4.0; it was one ~2,300-line
   `main` whose fixture names all had to be unique). The 0.1 pure-core + 0.2 modifier + 0.3 verb
   groups, plus the 1.0.0 hardening: the full output/renderer surface
   (`cmdit_print_error` over every `CmditErr` branch incl. the short-flag sbuf path,
@@ -266,16 +287,24 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
   1.4.0 adds the output-session, table-growth and lookup-equivalence groups, and 1.4.2 the
   past-2-MiB argv group. 1.5.0 adds the completion file-name group, which also runs the
   generated bash script under `/bin/bash -s` through `run_bash` (fork, a pipe each way, a
-  fixed driver; skipped with a note where `/bin/bash` is missing).
-- `tests/cmdit.bcyr` — **13 real benchmarks** (`cmdit_new` floor, register/parse
+  fixed driver; skipped with a note where `/bin/bash` is missing). 1.5.1 adds the escaper,
+  continue-on-error and verb-less completion groups. The escaper's runs the real function over
+  1,118,480 hostile strings and every pair of bytes, against an oracle that decodes and tests
+  the code point where the library tests byte ranges, and against a sloppy decoder that takes
+  overlong forms. `run_shell` generalises `run_bash`, and the suite now sources the zsh script
+  under a stub `_arguments` (skipped with a note where `/bin/zsh` is missing).
+- `tests/cmdit.bcyr` — **15 real benchmarks** (`cmdit_new` floor, register/parse
   subtraction, enum re-walk, dispatch before/after-verb parity, repeat accumulate, the
   1.3.2 `verb_new_floor`, the 1.3.7 `flag_find_long`, and 1.4.0's `flag_find_long_36` over
-  attn11's real flag names plus the three output paths to /dev/null);
+  attn11's real flag names plus the three output paths to /dev/null, and 1.5.1's error line
+  for a non-ASCII token and the verb-less scripts over owl's real flag table);
   see [`benchmarks.md`](../benchmarks.md).
 - `tests/cmdit.fcyr` — **real fuzz harness** (1.3.0; it was a stub before). 16 seeds × 400 argvs
   through `cmdit_parse_argv` and `cmdit_dispatch_argv`, mixing a 54-token pool with random bytes
-  and checking nine contract invariants (I1–I9 in its header; I7 since 1.3.3, I8 since 1.3.4,
-  I9, the flag lookups against a brute-force walk of the accessors, since 1.3.7). Since 1.3.1,
+  and checking eleven contract invariants (I1–I11 in its header; I7 since 1.3.3, I8 since 1.3.4,
+  I9, the flag lookups against a brute-force walk of the accessors, since 1.3.7; I10, a
+  continued parse against a plain one, and I11, the escaper's real output read back from a
+  pipe, since 1.5.1). Since 1.3.1,
   every 50th argv is long (up to 400 tokens), so the growth paths past 128 / 64 are fuzzed
   too. Mutation-proven at 1.3.0: 8 of 9 seeded source bugs caught. The survivor (the remainder
   slice's NULL terminator) is unobservable because fresh `alloc` memory is already zero. I9
@@ -301,9 +330,9 @@ CLI review (`agnosticos/docs/development/planning/cmdit.md`).
 
 ## Consumers
 
-Seven repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Pins are as read from each
-consumer's `cyrius.cyml` on 2026-10-14, and every one is on **≥ 1.2.4**, so all carry the
-1.2.4 completion-injection fix.
+Eight repos consume `dist/cmdit.cyr` via `[deps.cmdit]`. Pins are as read from each
+consumer's `cyrius.cyml` on 2026-10-14, except where a later date is given, and every one is
+on **≥ 1.2.4**, so all carry the 1.2.4 completion-injection fix.
 
 - **stiva 3.0.22** — pinned `1.2.4`. The most demanding consumer (36 verbs) and the source
   of the 1.2.0/1.2.1/1.2.2 work: verb introspection + completions, the two
@@ -314,7 +343,10 @@ consumer's `cyrius.cyml` on 2026-10-14, and every one is on **≥ 1.2.4**, so al
   consumer that surfaced `cmdit_help_flags`.
 - **ifran 2.2.1** — pinned `1.2.5`.
 - **dig 0.4.1** — pinned `1.2.4`. Tier-3 from the adoption review.
-- **commandress 1.1.8** — pinned `1.2.4`.
+- **commandress 1.5.2** — pinned `1.5.0` (read 2026-11-06). Its 2026-11-06 audit filed D-05
+  and D-06, which became 1.5.1's `cmdit_continue_on_error` and C1 escaper.
+- **owl 1.6.1** — pinned `1.5.0` (read 2026-11-06). 23 flags with the automatic two, no verbs,
+  adopted at owl 1.6.0 from the Tier-3 list. It holds back `--completions` until it pins 1.5.1.
 - **sit 1.12.2** — pinned `1.4.0` (read 2026-10-28; it adopted cmdit at sit 1.9.0, after the
   2026-10-14 read). Its `sit completions` prints `cmdit_completions` as is
   (`src/main.cyr:258`), and its L11 report became 1.5.0.
@@ -325,13 +357,19 @@ stiva and sit call `cmdit_completions`, each on a literal handle (`cmdit_new("st
 ## Next
 
 v1.0.0 froze the API; 1.1–1.5 are all append-only on it. Every gap the 2026-10-14 survey
-pinned shipped in 1.3.x, 1.4.0 was the refactor and optimization sweep, and 1.5.0 shipped
-the roadmap's last open item. **Nothing is open.** The [roadmap](roadmap.md)'s 1.5.x section
-is the intake: a consumer request or issue takes the next 1.5.x number.
+pinned shipped in 1.3.x, 1.4.0 was the refactor and optimization sweep, and 1.5.1 closed
+the three reports filed since 1.5.0. **Nothing is open.** The [roadmap](roadmap.md)'s 1.5.x
+section is the intake: a consumer request or issue takes the next 1.5.x number, its report
+goes in [`issues/`](issues/), and a resolved one moves to [`issues/archived/`](issues/archived/).
 
 Open, in rough order:
 
-- **Consumer re-pins to 1.5.0 are recommended.** They bring the misparse fixes, the audit
+- **owl and commandress should re-pin to 1.5.1.** Each is waiting on it:
+  - owl adds `cmdit_enum(h, 0, "completions", 0, "bash|zsh|fish", …)` and one call. The note
+    in its `src/main.cyr` points at this repo's issue, which is now in `issues/archived/`.
+  - commandress calls `cmdit_continue_on_error(cli, 1)` and drops the note above
+    `cli_side_for`. Its C1 fix comes with the pin.
+- **The other re-pins are recommended, to 1.5.1.** They bring the misparse fixes, the audit
   repairs, the token-naming error lines and 1.4.0's speed (a parse about 2× faster, `--help`
   over 10×). None of the seven breaks. 1.4.0's output is byte-identical to 1.3.7's; it now
   arrives in one write per call. A consumer on cyrius 6.7.12+ also reads a command line past

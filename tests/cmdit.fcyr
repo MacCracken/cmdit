@@ -30,6 +30,12 @@
 #       exactly that, as a brute-force walk of the cmdit_flag_*_at accessors finds
 #       it, or -1 when none is; and the accessors answer their sentinels past the
 #       table
+#   I10 (1.5.1) cmdit_continue_on_error changes only what lies past the first error:
+#       the result and all four error fields are those of a plain parse of the same
+#       argv, and the plain parse's positionals are a prefix of the continued one's
+#   I11 (1.5.1) nothing _cmdit_print_esc writes for an argv token, or for a hostile
+#       byte string, decodes to a C0 or C1 control, even under a decoder sloppy enough
+#       to take overlong forms
 #
 # Every 50th argv is long (up to 400 tokens) and mostly positional-shaped, with
 # frequent -H, so the parse usually runs past the 128-positional and 64-repeat
@@ -67,6 +73,11 @@ fn _fz_next(): i64 {
     _fz_state = _fz_state * 6364136223846793005 + 1442695040888963407;
     return (_fz_state >> 33) & 2147483647;
 }
+
+# I11: the pipe _cmdit_print_esc writes into, so the bytes it really emitted are read
+# back. Opened once in main; nothing here is left in it between calls.
+var _fz_esc_r = 0;
+var _fz_esc_w = 0;
 
 # Report a broken invariant with enough context to replay it, then exit 1.
 fn _fz_fail(what): i64 {
@@ -365,6 +376,95 @@ fn _fz_check_lookup(h): i64 {
     return 0;
 }
 
+# I10: `h`, continued, against `p`, a plain parse of the same argv that returned `prc`.
+fn _fz_check_continued(h, rc, p, prc): i64 {
+    _fz_check(rc == prc, "I10 continuing changed the result");
+    _fz_check(cmdit_error(h) == cmdit_error(p), "I10 continuing changed the first error");
+    _fz_check(cmdit_err_flag(h) == cmdit_err_flag(p), "I10 continuing changed err_flag");
+    _fz_check(cmdit_err_token(h) == cmdit_err_token(p), "I10 continuing changed err_token");
+    _fz_check(cmdit_err_value(h) == cmdit_err_value(p), "I10 continuing changed err_value");
+    var np = cmdit_positional_count(p);
+    _fz_check(cmdit_positional_count(h) >= np, "I10 a continued parse lost a positional");
+    var i = 0;
+    while (i < np) {
+        _fz_check(cmdit_positional(h, i) == cmdit_positional(p, i), "I10 the positionals are not a prefix");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# I11: 0 when a sloppy decoder finds a C0 or C1 control in the `n` bytes at `p`. A
+# sequence cut short decodes to nothing.
+fn _fz_esc_clean(p, n): i64 {
+    var i = 0;
+    while (i < n) {
+        var c = load8(p + i);
+        var need = 0;
+        var cp = c;
+        if (c >= 0xF0) { need = 3; cp = c & 7; }
+        elif (c >= 0xE0) { need = 2; cp = c & 15; }
+        elif (c >= 0xC0) { need = 1; cp = c & 31; }
+        i = i + 1;
+        var got = 0;
+        var cut = 0;
+        while (got < need && cut == 0) {
+            var b = 0;
+            if (i < n) { b = load8(p + i); }
+            if (b < 0x80 || b > 0xBF) { cut = 1; }
+            else {
+                cp = (cp << 6) | (b & 63);
+                i = i + 1;
+                got = got + 1;
+            }
+        }
+        if (cut == 0) {
+            if (cp < 0x20) { return 0; }
+            if (cp >= 0x80 && cp < 0xA0) { return 0; }
+        }
+    }
+    return 1;
+}
+
+# I11 for one string: what the real escaper writes, read back from the pipe. A token
+# is far shorter than the pipe's 64 KB, and an empty one writes nothing to read.
+fn _fz_check_esc(s): i64 {
+    if (load8(s) == 0) { return 0; }
+    _cmdit_print_esc(_fz_esc_w, s);
+    var b[512];
+    var n = syscall(0, _fz_esc_r, &b, 512);
+    _fz_check(n > 0, "I11 the escaper wrote nothing for a non-empty token");
+    _fz_check(_fz_esc_clean(&b, n), "I11 a control reached the output");
+    return 0;
+}
+
+# A hostile token: up to 24 bytes from the edges of the UTF-8 table, long enough to hold
+# sequences the suite's sweep of short strings cannot.
+fn _fz_hostile_token(): i64 {
+    var alpha = "\x1b\x7f\x41\x80\x8f\x90\x9b\x9f\xa0\xbf\xc0\xc1\xc2\xc4\xe0\xe2\xed\xef\xf0\xf4\xf5\xff";
+    var len = 1 + _fz_next() % 24;
+    var s = alloc(len + 1);
+    var i = 0;
+    while (i < len) {
+        store8(s + i, load8(alpha + _fz_next() % 22));
+        i = i + 1;
+    }
+    store8(s + len, 0);
+    return s;
+}
+
+# I11 over this iteration's argv, then a few hostile strings.
+fn _fz_esc_iter(): i64 {
+    var i = 1;
+    while (i < _fz_argc) {
+        var t = load64(_fz_argv + i * 8);
+        if (t != 0) { _fz_check_esc(t); }
+        i = i + 1;
+    }
+    var k = 0;
+    while (k < 4) { _fz_check_esc(_fz_hostile_token()); k = k + 1; }
+    return 0;
+}
+
 # One single-command iteration: parse, then the I4-I6 checks and the finalize.
 fn _fz_cmd_iter(): i64 {
     var h = _fz_cmd_handle();
@@ -431,6 +531,20 @@ fn _fz_cmd_iter(): i64 {
     var rc2 = cmdit_parse_argv(h2, _fz_argc, _fz_argv);
     _fz_check(rc2 == rc && cmdit_positional_count(h2) == np, "I6 fresh handles disagree");
     _fz_check(cmdit_error(h2) == cmdit_error(h) || rc == CMDIT_OK, "I6 fresh handles disagree on the error");
+
+    # I10: h2 is a plain parse nothing has touched since.
+    var h5 = _fz_cmd_handle();
+    cmdit_continue_on_error(h5, 1);
+    var rc5 = cmdit_parse_argv(h5, _fz_argc, _fz_argv);
+    _fz_check_result(h5, rc5, FZ_NFLAGS);
+    _fz_check_continued(h5, rc5, h2, rc2);
+    var np5 = cmdit_positional_count(h5);
+    var k6 = 0;
+    while (k6 < np5) {
+        _fz_check(_fz_is_argv_token(cmdit_positional(h5, k6)), "I4 a continued positional is not an argv token");
+        k6 = k6 + 1;
+    }
+
     var h3 = _fz_cmd_handle();
     var prime[24];
     store64(&prime, "prog");
@@ -501,6 +615,29 @@ fn _fz_verb_iter(): i64 {
     var rc2 = cmdit_dispatch_argv(h2, _fz_argc, _fz_argv);
     _fz_check(rc2 == rc && cmdit_verb_matched(h2) == vm, "I6 fresh dispatch handles disagree");
     _fz_check(cmdit_error(h2) == cmdit_error(h), "I6 fresh dispatch handles disagree on the error");
+
+    # I10, for the dispatcher. A verb a plain dispatch never reached may be matched here,
+    # so the verb is compared only where that dispatch ran to the end.
+    var h5 = _fz_verb_handle();
+    cmdit_continue_on_error(h5, 1);
+    var rc5 = cmdit_dispatch_argv(h5, _fz_argc, _fz_argv);
+    _fz_check_result(h5, rc5, 4);
+    _fz_check_continued(h5, rc5, h2, rc2);
+    var vm5 = cmdit_verb_matched(h5);
+    _fz_check(vm5 >= 0 - 1 && vm5 < cmdit_verb_count(h5), "I10 verb_matched outside the verb table");
+    if (rc2 != CMDIT_RESULT_ERR) { _fz_check(vm5 == cmdit_verb_matched(h2), "I10 continuing changed a clean match"); }
+    var va5 = cmdit_verb_argc(h5);
+    _fz_check(va5 >= 0 && va5 <= _fz_argc - 1, "I10 remainder count outside argc");
+    var vv5 = cmdit_verb_argv(h5);
+    if (vv5 != 0) {
+        _fz_check(load64(vv5 + va5 * 8) == 0, "I10 remainder slice is not NULL-terminated");
+        var k7 = 0;
+        while (k7 < va5) {
+            _fz_check(_fz_is_argv_token(load64(vv5 + k7 * 8)), "I10 remainder token is not an argv token");
+            k7 = k7 + 1;
+        }
+    }
+
     var h3 = _fz_verb_handle();
     var prime[24];
     store64(&prime, "prog");
@@ -535,6 +672,10 @@ fn main(): i64 {
     alloc_init();
     _fz_build_pool();
     _fz_edges();
+    var pfd[8];                                                   # int fds[2]
+    _fz_check(syscall(22, &pfd) == 0, "I11 no pipe");
+    _fz_esc_r = load32(&pfd);
+    _fz_esc_w = load32(&pfd + 4);
     var total = 0;
     _fz_seed = 1;
     while (_fz_seed <= FZ_SEEDS) {
@@ -545,6 +686,7 @@ fn main(): i64 {
             _fz_build_argv();
             _fz_cmd_iter();
             _fz_verb_iter();
+            _fz_esc_iter();
             _fz_iter = _fz_iter + 1;
             total = total + 1;
         }

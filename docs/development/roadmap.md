@@ -7,9 +7,10 @@
 ## Open — 1.5.x
 
 The public API froze at 1.0.0, and every gap the 2026-10-14 adoption survey pinned shipped
-in 1.3.x. **Open work is planned as 1.5.x**, each item its own release. **Nothing is open
-now.** New work comes from consumers: a gap a migration runs into, or a defect someone hits.
-A new item takes the next 1.5.x number.
+in 1.3.x. **Open work is planned as 1.5.x**. **Nothing is open now.** New work comes from
+consumers: a gap a migration runs into, or a defect someone hits. A new item takes the next
+1.5.x number when it is scheduled, and its report lives in [`issues/`](issues/). A resolved
+report moves to [`issues/archived/`](issues/archived/).
 
 Each one is filed here as an item that names:
 
@@ -24,7 +25,7 @@ its own side if it must.
 
 ## Adoption — demand-gated, not a forced sweep
 
-Adopted (`[deps.cmdit]`): kii, anuenue, stiva, ifran, dig, commandress, sit. See
+Adopted (`[deps.cmdit]`): kii, anuenue, stiva, ifran, dig, commandress, sit, owl. See
 [`state.md`](state.md#consumers) for pins.
 
 Still hand-rolled, from the 2026-06-25 ecosystem CLI review
@@ -33,7 +34,7 @@ Still hand-rolled, from the 2026-06-25 ecosystem CLI review
 1. **Tier-1 drop-ins** — bannermanor, klug, shakti, yo, whirl.
 2. **Tier-2 verb tools** — ark, takumi, hapi, phylax, agnova, hadara, hoosh, cyim;
    the kriya `argv[0]` multiplexer via `cmdit_basename` + `cmdit_raw_argv`.
-3. **Tier-3 rich/edge** — attn11, owl, chakshu.
+3. **Tier-3 rich/edge** — attn11, chakshu.
 
 Each candidate's `docs/development/roadmap.md` carries an **"Adopting cmdit (CLI parsing)"**
 section (filed 2026-10-14). It maps that repo's hand-rolled sites (`file:line`) to cmdit

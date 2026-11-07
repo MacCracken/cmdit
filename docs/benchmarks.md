@@ -14,6 +14,14 @@
 > **1.5.0 (2026-10-28)** writes a longer bash and fish script: `completions_devnull` went
 > 13.97 → 14.32 µs (+2.5%) against 1.4.2, interleaved, median of 15 at load average ~0.4.
 > The other 12 were within ±3%.
+>
+> **1.5.1 (2026-11-06)** ran interleaved against 1.5.0, median of 15 at load average ~2.0.
+> `parse_argv_mixed` went 1.167 → 1.168 µs, one load per parse. The new
+> `print_error_utf8_devnull` is the escaper's UTF-8 walk over a 39-byte token, 690 → 764 ns
+> (+10.7%). The new `completions_verbless_devnull` went 11.4 → 40.2 µs, because owl's three
+> scripts now hold its 23 flags. `get_enum_rewalk` went 95 → 100 ns on untouched code and
+> dispatch +3%: unused padding in unchanged 1.5.0 moved them over 97–101, 169–184 and
+> 182–200 ns. The other 9 were within ±3.1%. The 1.4.0 table stands.
 
 ## Method
 
@@ -29,8 +37,9 @@ negligible. Three iteration regimes, because `cmdit_new` allocates ~3 KB (~8.9 K
 - **Pure-leaf** benches (`get_enum_rewalk`, `dispatch_*`, `flag_find_long*`) reuse one
   handle and run **200k–1M iters**.
 - **Output** benches (`help_fd_devnull`, `print_error_devnull`, `completions_devnull`, new in
-  1.4.0) render the same handle to /dev/null **2k–20k times**, so they measure the writing,
-  which before 1.4.0 was mostly write(2) calls.
+  1.4.0; `print_error_utf8_devnull`, `completions_verbless_devnull`, new in 1.5.1) render the
+  same handle to /dev/null **2k–20k times**, so they measure the writing, which before 1.4.0
+  was mostly write(2) calls.
 
 Costs are isolated by **subtraction**, since `cmdit_new` is shared:
 

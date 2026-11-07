@@ -142,13 +142,13 @@ fn pipe_write_all(fd, s): i64 {
     return off;
 }
 
-# `bash -s` reads `script` and then `driver` from a pipe on its stdin, and its stdout
-# comes back in `out`. Only these fixed bytes reach bash: no argv and no command string
-# is built from anything. Both are a few KB against a 64 KB pipe buffer, so writing them
-# all before reading cannot block. Returns the bytes read, or -1 when /bin/bash is
-# missing or a pipe or fork fails.
-fn run_bash(script, driver, out, cap): i64 {
-    if (syscall(21, "/bin/bash", 1) != 0) { return 0 - 1; }      # access(X_OK)
+# `<shell> [opt] -s` reads `first` and then `second` from a pipe on its stdin, and its
+# stdout comes back in `out`. Only these fixed bytes reach the shell: no argv and no
+# command string is built from anything. Both are a few KB against a 64 KB pipe buffer,
+# so writing them all before reading cannot block. `opt` is one option, or 0. Returns
+# the bytes read, or -1 when the shell is missing or a pipe or fork fails.
+fn run_shell(shell, opt, first, second, out, cap): i64 {
+    if (syscall(21, shell, 1) != 0) { return 0 - 1; }             # access(X_OK)
     var ip[8];                                                    # int fds[2]: bash's stdin
     var op[8];                                                    # int fds[2]: bash's stdout
     if (syscall(22, &ip) != 0) { return 0 - 1; }                  # pipe
@@ -162,21 +162,23 @@ fn run_bash(script, driver, out, cap): i64 {
         syscall(3, load32(&ip + 4));
         syscall(3, load32(&op));
         syscall(3, load32(&op + 4));
-        var av[24];
-        store64(&av, "/bin/bash");
-        store64(&av + 8, "-s");
-        store64(&av + 16, 0);
+        var av[32];
+        store64(&av, shell);
+        var ac = 1;
+        if (opt != 0) { store64(&av + 8, opt); ac = 2; }
+        store64(&av + ac * 8, "-s");
+        store64(&av + (ac + 1) * 8, 0);
         var ev[16];
         store64(&ev, "PATH=/usr/bin:/bin");
         store64(&ev + 8, 0);
-        syscall(59, "/bin/bash", &av, &ev);                       # execve
+        syscall(59, shell, &av, &ev);                             # execve
         syscall(60, 127);                                         # exit: only if exec failed
     }
     syscall(3, load32(&ip));
     syscall(3, load32(&op + 4));
     var wfd = load32(&ip + 4);
-    pipe_write_all(wfd, script);
-    pipe_write_all(wfd, driver);
+    pipe_write_all(wfd, first);
+    pipe_write_all(wfd, second);
     syscall(3, wfd);
     var rfd = load32(&op);
     var n = 0;
@@ -190,6 +192,11 @@ fn run_bash(script, driver, out, cap): i64 {
     syscall(61, pid, &st, 0, 0);                                  # wait4
     store8(out + n, 0);
     return n;
+}
+
+# 1.5.0: the generated bash `script`, then a `driver` that exercises it.
+fn run_bash(script, driver, out, cap): i64 {
+    return run_shell("/bin/bash", 0, script, driver, out, cap);
 }
 
 # 1 when `hay` contains `needle` (both NUL-terminated).
@@ -3260,6 +3267,725 @@ fn g115_1_5_0_completion_files(): i64 {
     return 0;
 }
 
+# --- 1.5.1 helpers -----------------------------------------------------------------
+
+var tav_n = 0;
+
+# A synthetic argv "t a b c d e", ending at the first 0. Its argc lands in tav_n.
+fn tav(a, b, c, d, e): i64 {
+    var av = alloc(7 * 8);
+    store64(av, "t");
+    store64(av + 8, a);
+    store64(av + 16, b);
+    store64(av + 24, c);
+    store64(av + 32, d);
+    store64(av + 40, e);
+    store64(av + 48, 0);
+    var n = 1;
+    while (n < 6 && load64(av + n * 8) != 0) { n = n + 1; }
+    tav_n = n;
+    return av;
+}
+
+# The stderr line for the bad flag token `tok`.
+fn esc_err(tok): i64 {
+    var h = cmdit_new("t");
+    var av = tav(tok, 0, 0, 0, 0);
+    cmdit_parse_argv(h, tav_n, av);
+    var b = alloc(256);
+    capture_print_error(h, b, 256);
+    return b;
+}
+
+var esc_cp = 0;
+
+# The test's own reading of UTF-8. The library tests byte ranges; this decodes and tests
+# the VALUE, so the two cannot share a mistake. Returns the sequence's length with its
+# code point in esc_cp, or 0 when the bytes are not well-formed.
+fn esc_decode(p): i64 {
+    var c = load8(p);
+    var n = 0;
+    var cp = 0;
+    if (c >= 0xF0 && c < 0xF8) { n = 4; cp = c & 7; }
+    elif (c >= 0xE0 && c < 0xF0) { n = 3; cp = c & 15; }
+    elif (c >= 0xC0 && c < 0xE0) { n = 2; cp = c & 31; }
+    else { return 0; }
+    var i = 1;
+    while (i < n) {
+        var b = load8(p + i);
+        if (b < 0x80 || b > 0xBF) { return 0; }
+        cp = (cp << 6) | (b & 63);
+        i = i + 1;
+    }
+    esc_cp = cp;
+    if (n == 2 && cp < 0x80) { return 0; }
+    if (n == 3 && cp < 0x800) { return 0; }
+    if (n == 4 && cp < 0x10000) { return 0; }
+    if (cp > 0x10FFFF) { return 0; }
+    if (cp >= 0xD800 && cp <= 0xDFFF) { return 0; }
+    return n;
+}
+
+# What the escaper's contract says `s` becomes, written into `out`. One '?' per control
+# character, every other byte as it was.
+fn esc_expect(s, out): i64 {
+    var i = 0;
+    var o = 0;
+    while (load8(s + i) != 0) {
+        var c = load8(s + i);
+        var n = 0;
+        if (c >= 0x80) { n = esc_decode(s + i); }
+        var ctl = 0;
+        if (n > 0) {
+            if (esc_cp < 0xA0) { ctl = 1; }
+        } else {
+            n = 1;
+            if (c < 0x20 || c == 0x7F) { ctl = 1; }
+            if (c >= 0x80 && c < 0xA0) { ctl = 1; }
+        }
+        if (ctl == 1) {
+            store8(out + o, 63);
+            o = o + 1;
+        } else {
+            var k = 0;
+            while (k < n) { store8(out + o, load8(s + i + k)); o = o + 1; k = k + 1; }
+        }
+        i = i + n;
+    }
+    store8(out + o, 0);
+    return o;
+}
+
+# 1 when a SLOPPY decoder, the kind that takes overlong forms, finds no C0 or C1 control
+# in `p`. It is what a careless terminal would act on. A cut sequence decodes to nothing.
+fn esc_lax_clean(p): i64 {
+    var i = 0;
+    while (load8(p + i) != 0) {
+        var c = load8(p + i);
+        var need = 0;
+        var cp = c;
+        if (c >= 0xF0) { need = 3; cp = c & 7; }
+        elif (c >= 0xE0) { need = 2; cp = c & 15; }
+        elif (c >= 0xC0) { need = 1; cp = c & 31; }
+        i = i + 1;
+        var got = 0;
+        var cut = 0;
+        while (got < need && cut == 0) {
+            var b = load8(p + i);
+            if (b < 0x80 || b > 0xBF) { cut = 1; }
+            else {
+                cp = (cp << 6) | (b & 63);
+                i = i + 1;
+                got = got + 1;
+            }
+        }
+        if (cut == 0) {
+            if (cp < 0x20) { return 0; }
+            if (cp >= 0x80 && cp < 0xA0) { return 0; }
+        }
+    }
+    return 1;
+}
+
+# Run the real _cmdit_print_esc over `s` inside an open session, so nothing reaches a
+# syscall, and hold what it wrote, NUL-terminated, in _cmdit_ob.
+fn esc_run(fd, s): i64 {
+    _cmdit_ob_n = 0;
+    _cmdit_print_esc(fd, s);
+    store8(_cmdit_ob + _cmdit_ob_n, 0);
+    return _cmdit_ob;
+}
+
+# One string through every check. Returns the failures.
+fn esc_check(fd, s, keep, want): i64 {
+    var bad = 0;
+    var got = esc_run(fd, s);
+    esc_expect(s, want);
+    if (cstreq(got, want) != 1) { bad = bad + 1; }
+    if (esc_lax_clean(got) != 1) { bad = bad + 1; }
+    memcpy(keep, got, _cmdit_ob_n + 1);
+    if (cstreq(esc_run(fd, keep), keep) != 1) { bad = bad + 1; }
+    return bad;
+}
+
+# 1.5.1 _cmdit_print_esc shows C1 controls as '?' and keeps real UTF-8 (commandress D-06)
+fn g116_1_5_1_escaper_c1(): i64 {
+    test_group("1.5.1 the escaper stops C1 controls and keeps UTF-8 (commandress D-06)");
+    assert(cstreq(esc_err("--\xc2\x9b31m"), "t: unknown flag: --?31m\n") == 1,
+      "C2 9B, CSI in one character, is one ?");
+    assert(cstreq(esc_err("--\xc2\x80."), "t: unknown flag: --?.\n") == 1, "C2 80, the first C1");
+    assert(cstreq(esc_err("--\xc2\x9f."), "t: unknown flag: --?.\n") == 1, "C2 9F, the last C1");
+    assert(cstreq(esc_err("--\xc2\xa0."), "t: unknown flag: --\xc2\xa0.\n") == 1, "C2 A0 is past C1 and kept");
+    assert(cstreq(esc_err("--\x9b."), "t: unknown flag: --?.\n") == 1, "a bare 9B is a C1 byte");
+    assert(cstreq(esc_err("--\x80."), "t: unknown flag: --?.\n") == 1, "a bare 80");
+    assert(cstreq(esc_err("--\x9f."), "t: unknown flag: --?.\n") == 1, "a bare 9F");
+    assert(cstreq(esc_err("--\xa0."), "t: unknown flag: --\xa0.\n") == 1, "a bare A0 is no control and is kept");
+    # Each of these ends in a byte a plain 0x80..0x9F test would mangle.
+    assert(cstreq(esc_err("--\xc4\x9b"), "t: unknown flag: --\xc4\x9b\n") == 1, "ě, C4 9B, is kept");
+    assert(cstreq(esc_err("--\xe0\xa4\x9b"), "t: unknown flag: --\xe0\xa4\x9b\n") == 1,
+      "a 3-byte character is kept, though 9B follows no lead byte");
+    assert(cstreq(esc_err("--\xf0\x9f\x98\x80"), "t: unknown flag: --\xf0\x9f\x98\x80\n") == 1, "a 4-byte character");
+    assert(cstreq(esc_err("--\xed\x9f\x9b"), "t: unknown flag: --\xed\x9f\x9b\n") == 1, "the top of the ED range");
+    # Malformed input: nothing it holds may decode to a control.
+    assert(cstreq(esc_err("--\xc2\xc2\x9b"), "t: unknown flag: --\xc2?\n") == 1, "a pair after a stray lead");
+    assert(cstreq(esc_err("--\xc2\x9b\x9b"), "t: unknown flag: --??\n") == 1, "a pair, then a bare byte");
+    assert(cstreq(esc_err("--\xc2"), "t: unknown flag: --\xc2\n") == 1, "a lead byte at the end");
+    assert(cstreq(esc_err("--\xe2\x9b"), "t: unknown flag: --\xe2?\n") == 1, "a cut sequence holds a bare byte");
+    assert(cstreq(esc_err("--\xc0\x9b"), "t: unknown flag: --\xc0?\n") == 1, "overlong ESC");
+    assert(cstreq(esc_err("--\xe0\x82\x9b"), "t: unknown flag: --\xe0??\n") == 1, "overlong CSI");
+    assert(cstreq(esc_err("--\xf0\x80\x82\x9b"), "t: unknown flag: --\xf0???\n") == 1, "overlong CSI in four bytes");
+    assert(cstreq(esc_err("--\xed\xa0\x9b"), "t: unknown flag: --\xed\xa0?\n") == 1, "a surrogate is not UTF-8");
+    assert(cstreq(esc_err("--\xf4\x90\x80\x9b"), "t: unknown flag: --\xf4???\n") == 1, "past U+10FFFF");
+    assert(cstreq(esc_err("--\xf5\x80\x80\x9b"), "t: unknown flag: --\xf5???\n") == 1, "F5 is no lead byte at all");
+    # A control between the halves of a pair must not rejoin them.
+    assert(cstreq(esc_err("--\xc2\x1b\x9b"), "t: unknown flag: --\xc2??\n") == 1, "a pair cannot reassemble");
+    assert(cstreq(esc_err("--\xc3\xa9\xc2\x9b\xc3\xa9"), "t: unknown flag: --\xc3\xa9?\xc3\xa9\n") == 1,
+      "the run on each side of a control is kept");
+
+    var vh = cmdit_new("t");
+    cmdit_int(vh, 0, "count", 1, "");
+    var vav = tav("--count=\xc2\x9b1", 0, 0, 0, 0);
+    cmdit_parse_argv(vh, tav_n, vav);
+    var vb = alloc(256);
+    capture_print_error(vh, vb, 256);
+    assert(cstreq(vb, "t: --count: invalid integer value '?1'\n") == 1, "a rejected value is escaped too");
+    var ph = cmdit_new(0);
+    var pav = tav("--nope", 0, 0, 0, 0);
+    store64(pav, "t\xc2\x9b");
+    cmdit_parse_argv(ph, tav_n, pav);
+    capture_print_error(ph, vb, 256);
+    assert(cstreq(vb, "t?: unknown flag: --nope\n") == 1, "and so is argv[0]");
+
+    # Every short hostile string, through the real function: 16 bytes chosen to sit on
+    # the edges of the UTF-8 table, in every order up to length 5.
+    var alpha = "\x1b\x7f\x41\x80\x9b\x9f\xa0\xbf\xc0\xc2\xc4\xe0\xed\xf0\xf4\xf5";
+    var na = strlen(alpha);
+    var nul = syscall(2, "/dev/null", 1, 0);
+    var prev = _cmdit_out_begin(nul);
+    var s = alloc(16);
+    var keep = alloc(32);
+    var want = alloc(32);
+    var bad = 0;
+    var cases = 0;
+    var total = 1;
+    var len = 1;
+    while (len <= 5) {
+        total = total * na;
+        var v = 0;
+        while (v < total) {
+            var x = v;
+            var i = 0;
+            while (i < len) {
+                store8(s + i, load8(alpha + (x % na)));
+                x = x / na;
+                i = i + 1;
+            }
+            store8(s + len, 0);
+            bad = bad + esc_check(nul, s, keep, want);
+            cases = cases + 1;
+            v = v + 1;
+        }
+        len = len + 1;
+    }
+    assert(cases == 1118480, "the sweep covered every string");
+    assert(bad == 0, "each became what the contract says, no control survived, and it is idempotent");
+    # And every pair of bytes at all, then each behind a real two-byte character.
+    var pairs = 0;
+    var pbad = 0;
+    var a = 1;
+    while (a < 256) {
+        var b = 0;
+        while (b < 256) {
+            store8(s, a);
+            store8(s + 1, b);
+            store8(s + 2, 0);
+            pbad = pbad + esc_check(nul, s, keep, want);
+            store8(s, 0xC3);
+            store8(s + 1, 0xA9);
+            store8(s + 2, a);
+            store8(s + 3, b);
+            store8(s + 4, 0);
+            pbad = pbad + esc_check(nul, s, keep, want);
+            pairs = pairs + 1;
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    assert(pairs == 65280, "every pair of bytes was tried");
+    assert(pbad == 0, "and each holds the contract");
+    _cmdit_ob_n = 0;
+    _cmdit_out_end(prev);
+    syscall(3, nul);
+    return 0;
+}
+
+var ce_side = 0;
+var ce_count = 0;
+var ce_name = 0;
+var ce_loud = 0;
+var ce_one = 0;
+var ce_rc = 0;
+
+# The flags the continue-on-error group parses with. --name refuses a flag-shaped value.
+fn ce_handle(on): i64 {
+    var h = cmdit_new("t");
+    cmdit_continue_on_error(h, on);
+    ce_side = cmdit_enum(h, 0, "side", "left", "left|right", "");
+    ce_count = cmdit_int(h, 99, "count", 1, "");
+    ce_name = cmdit_str(h, 110, "name", 0, "");
+    cmdit_reject_flag_value(h, ce_name);
+    ce_loud = cmdit_bool(h, 108, "loud", "");
+    ce_one = cmdit_str(h, 0, "one", 0, "");
+    cmdit_once(h, ce_one);
+    return h;
+}
+
+# Parse "t a b c d e" on a fresh handle, with the mode on. The result lands in ce_rc.
+fn ce_go(a, b, c, d, e): i64 {
+    var h = ce_handle(1);
+    var av = tav(a, b, c, d, e);
+    ce_rc = cmdit_parse_argv(h, tav_n, av);
+    return h;
+}
+
+var cv_root = 0;
+var cv_jobs = 0;
+
+# A verb handle for the same group: --root, --jobs, verbs `run` and `ps`.
+fn cv_handle(on): i64 {
+    var h = cmdit_new("t");
+    cmdit_continue_on_error(h, on);
+    cv_root = cmdit_str(h, 0, "root", 0, "");
+    cv_jobs = cmdit_int(h, 106, "jobs", 1, "");
+    cmdit_verb(h, "run", "");
+    cmdit_verb(h, "ps", "");
+    return h;
+}
+
+# 1.5.1 cmdit_continue_on_error (commandress D-05)
+fn g117_1_5_1_continue_on_error(): i64 {
+    test_group("1.5.1 cmdit_continue_on_error: the parse (commandress D-05)");
+    # The issue's reproduction, both ways.
+    var h = ce_handle(0);
+    var av = tav("--bogus", "--side=right", 0, 0, 0);
+    assert(cmdit_parse_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "off is the default: --bogus fails the parse");
+    assert(cmdit_get_enum(h, ce_side) == 0, "and --side after it is lost, as ever");
+    h = cmdit_new("t");
+    var fs = cmdit_enum(h, 0, "side", "left", "left|right", "");
+    assert(cmdit_parse_argv(h, tav_n, av) == CMDIT_RESULT_ERR && cmdit_get_enum(h, fs) == 0,
+      "a fresh handle stops there too, without the setter being called at all");
+    h = ce_go("--bogus", "--side=right", 0, 0, 0);
+    assert(ce_rc == CMDIT_RESULT_ERR, "on: the parse still fails");
+    assert(cmdit_get_enum(h, ce_side) == 1, "on: --side after the bad flag is applied");
+    assert(cmdit_seen(h, ce_side) == 1, "on: and it is SEEN");
+    assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN, "on: the error is the bad flag");
+    assert(cstreq(cmdit_err_token(h), "--bogus") == 1, "on: and it names it");
+
+    # The first error stands, whole.
+    h = ce_go("--bogus", "--count", "abc", "--also-bad", "--side=right");
+    assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN, "a later bad value does not replace the code");
+    assert(cstreq(cmdit_err_token(h), "--bogus") == 1, "nor the token");
+    assert(cmdit_err_flag(h) == 0 - 1, "nor the flag");
+    assert(cmdit_err_value(h) == 0, "nor the value");
+    assert(cmdit_get_enum(h, ce_side) == 1, "and the good flag at the end is still applied");
+    h = ce_go("--count", "abc", "--bogus", 0, 0);
+    assert(cmdit_error(h) == CMDIT_ERR_BAD_INT, "the other order: the first error is the bad value");
+    assert(cmdit_err_flag(h) == ce_count, "it names its flag");
+    assert(cstreq(cmdit_err_value(h), "abc") == 1, "and its value");
+    assert(cstreq(cmdit_err_token(h), "--count") == 1, "and its token");
+    var pb = alloc(256);
+    capture_print_error(h, pb, 256);
+    assert(cstreq(pb, "t: --count: invalid integer value 'abc'\n") == 1, "cmdit_print_error reports the first");
+
+    # An error outranks help and version, whichever came first.
+    h = ce_go("--bogus", "--help", 0, 0, 0);
+    assert(ce_rc == CMDIT_RESULT_ERR && cmdit_error(h) == CMDIT_ERR_UNKNOWN, "--bogus --help still reports --bogus");
+    h = ce_go("--help", "--bogus", 0, 0, 0);
+    assert(ce_rc == CMDIT_RESULT_ERR, "--help --bogus is the error it always was");
+    h = ce_go("--bogus", "-V", 0, 0, 0);
+    assert(ce_rc == CMDIT_RESULT_ERR, "-V behind a bad flag does not replace it");
+    h = ce_go("--help", 0, 0, 0, 0);
+    assert(ce_rc == CMDIT_HELP, "with nothing bad on the line, help is still help");
+    h = ce_go("-V", 0, 0, 0, 0);
+    assert(ce_rc == CMDIT_VERSION, "and version is still version");
+    h = ce_go("-h", 0, 0, 0, 0);
+    assert(ce_rc == CMDIT_HELP, "the first flag entry is intact beside the handle's new field");
+    h = ce_go("--side=right", "x", 0, 0, 0);
+    assert(ce_rc == CMDIT_OK && cmdit_error(h) == CMDIT_ERR_NONE, "a clean parse is unchanged");
+
+    # Where each bad token resumes.
+    h = ce_go("--bogus", "y", "--side=right", 0, 0);
+    assert(cmdit_positional_count(h) == 1 && cstreq(cmdit_positional(h, 0), "y") == 1,
+      "--bogus y: y is its own token, a positional");
+    assert(cmdit_get_enum(h, ce_side) == 1, "and the parse goes on from it");
+    h = ce_go("--bogus=1", "--side=right", 0, 0, 0);
+    assert(cmdit_get_enum(h, ce_side) == 1 && cmdit_positional_count(h) == 0, "--bogus=1 is one token");
+    h = ce_go("-z", "--side=right", 0, 0, 0);
+    assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN && cmdit_get_enum(h, ce_side) == 1, "an unknown short");
+    h = ce_go("-lx", "--side=right", 0, 0, 0);
+    assert(cmdit_error(h) == CMDIT_ERR_BUNDLED && cmdit_get_enum(h, ce_side) == 1, "a bundled short");
+    h = ce_go("--count", "abc", "--side=right", 0, 0);
+    assert(cmdit_positional_count(h) == 0, "a registered flag's rejected value is consumed, not a positional");
+    assert(cmdit_get_enum(h, ce_side) == 1, "and the next flag is reached");
+    assert(cmdit_get_int(h, ce_count) == 1, "and the rejected value left the default");
+    h = ce_go("--count=abc", "--side=right", 0, 0, 0);
+    assert(cmdit_get_enum(h, ce_side) == 1, "an attached rejected value takes no second token");
+    h = ce_go("--loud=0", "--side=right", 0, 0, 0);
+    assert(cmdit_error(h) == CMDIT_ERR_UNEXPECTED_VALUE && cmdit_get_enum(h, ce_side) == 1, "--loud=0");
+    assert(cmdit_get_bool(h, ce_loud) == 0, "and it stays off");
+    h = ce_go("--name", "--side=right", 0, 0, 0);
+    assert(cmdit_error(h) == CMDIT_ERR_MISSING_VALUE, "cmdit_reject_flag_value refuses the flag-shaped value");
+    assert(cmdit_get_enum(h, ce_side) == 1, "so that token is a flag of its own");
+    assert(cmdit_get_str(h, ce_name) == 0, "and --name has no value");
+    h = ce_go("--one", "a", "--one", "b", "--side=right");
+    assert(cmdit_error(h) == CMDIT_ERR_REPEATED, "a second cmdit_once occurrence");
+    assert(cmdit_positional_count(h) == 0, "consumes its value");
+    assert(cstreq(cmdit_get_str(h, ce_one), "a") == 1, "keeps the first");
+    assert(cmdit_get_enum(h, ce_side) == 1, "and goes on");
+    h = ce_go("--side=right", "--count", 0, 0, 0);
+    assert(cmdit_error(h) == CMDIT_ERR_MISSING_VALUE && cmdit_get_enum(h, ce_side) == 1, "a value missing at the end");
+    h = ce_go("--bogus", "--", "--side=right", 0, 0);
+    assert(cmdit_get_enum(h, ce_side) == 0, "`--` after a bad token still ends the flags");
+    assert(cmdit_positional_count(h) == 1, "and what follows is positional");
+    h = ce_go("--bogus", "--side=right", "--side=left", 0, 0);
+    assert(cmdit_get_enum(h, ce_side) == 0, "past a bad token, the last value still wins");
+    h = ce_handle(1);
+    cmdit_stop_at_positional(h, 1);
+    av = tav("--bogus", "x", "--side=right", 0, 0);
+    cmdit_parse_argv(h, tav_n, av);
+    assert(cmdit_positional_count(h) == 2 && cmdit_get_enum(h, ce_side) == 0, "POSIX stop still stops at x");
+
+    # The setter.
+    assert(cmdit_continue_on_error(0, 1) == 0 - 1, "a 0 handle -> -1");
+    h = ce_handle(1);
+    assert(cmdit_continue_on_error(h, 0) == 0, "off -> 0");
+    av = tav("--bogus", "--side=right", 0, 0, 0);
+    cmdit_parse_argv(h, tav_n, av);
+    assert(cmdit_get_enum(h, ce_side) == 0, "turning it off stops at the bad token again");
+    h = ce_handle(0);
+    assert(cmdit_continue_on_error(h, 7) == 0, "any non-zero is on");
+    cmdit_parse_argv(h, tav_n, av);
+    assert(cmdit_get_enum(h, ce_side) == 1, "and works");
+
+    # A new parse starts clean: the first error is the first of THIS parse.
+    h = ce_go("--bogus", 0, 0, 0, 0);
+    av = tav("--worse", 0, 0, 0, 0);
+    cmdit_parse_argv(h, tav_n, av);
+    assert(cstreq(cmdit_err_token(h), "--worse") == 1, "a second parse reports its own first error");
+    av = tav("--side=right", 0, 0, 0, 0);
+    assert(cmdit_parse_argv(h, tav_n, av) == CMDIT_OK, "and a clean one is clean");
+    assert(cmdit_error(h) == CMDIT_ERR_NONE && cmdit_err_token(h) == 0, "with nothing left over");
+
+    # Later stages cannot displace the first error either.
+    h = cmdit_new("t");
+    cmdit_continue_on_error(h, 1);
+    var freq = cmdit_str(h, 0, "must", 0, "");
+    cmdit_required(h, freq);
+    var fenv = cmdit_str(h, 0, "path", 0, "");
+    cmdit_env(h, fenv, "CMDIT_TEST_NEVER_SET");
+    av = tav("--bogus", 0, 0, 0, 0);
+    cmdit_parse_argv(h, tav_n, av);
+    assert(cmdit_finalize(h) == CMDIT_RESULT_ERR, "finalize still fails on the required flag");
+    assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN, "but the error stays the first");
+    assert(cmdit_err_flag(h) == 0 - 1, "with no flag named by the later REQUIRED_MISSING");
+    assert(cstreq(cmdit_err_token(h), "--bogus") == 1, "and its token");
+    assert(cmdit_require_positionals(h, 3) == CMDIT_RESULT_ERR, "a positional gate fails too");
+    assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN, "and leaves it");
+    var home = getenv("HOME");
+    if (home != 0) {
+        h = cmdit_new("t");
+        cmdit_continue_on_error(h, 1);
+        fenv = cmdit_str(h, 0, "home", 0, "");
+        cmdit_env(h, fenv, "HOME");
+        av = tav("--bogus", 0, 0, 0, 0);
+        cmdit_parse_argv(h, tav_n, av);
+        assert(cmdit_finalize(h) == CMDIT_OK, "finalize after a failed parse reports its own stage");
+        assert(cstreq(cmdit_get_str(h, fenv), home) == 1, "and the env fallback still applies");
+        assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN, "with the first error still standing");
+    }
+    h = ce_go("a", "b", 0, 0, 0);
+    assert(cmdit_require_positionals_max(h, 1) == CMDIT_RESULT_ERR,
+      "with no earlier error, a later stage records its own");
+    assert(cmdit_error(h) == CMDIT_ERR_TOO_MANY_POSITIONAL, "the first error is simply that one");
+
+    # NOMEM is not a fact about a token, so the parse stops there.
+    var huge = 576460752303423488;
+    h = ce_handle(1);
+    store64(h + 32, huge);
+    store64(h + 40, huge);
+    av = tav("x", "--side=right", 0, 0, 0);
+    assert(cmdit_parse_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "a refused positional growth fails the parse");
+    assert(cmdit_error(h) == CMDIT_ERR_NOMEM, "as NOMEM");
+    assert(cmdit_get_enum(h, ce_side) == 0, "and stops it");
+    h = cmdit_new("t");
+    cmdit_continue_on_error(h, 1);
+    var frp = cmdit_repeat(h, 72, "header", "");
+    var fsd = cmdit_enum(h, 0, "side", "left", "left|right", "");
+    av = tav("-H", "a", 0, 0, 0);
+    cmdit_parse_argv(h, tav_n, av);
+    store64(_cmdit_entry(h, frp) + 96, huge);
+    av = tav("-H", "a", "--side=right", 0, 0);
+    assert(cmdit_parse_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "a refused repeat growth fails the parse");
+    assert(cmdit_error(h) == CMDIT_ERR_NOMEM, "as NOMEM");
+    assert(cmdit_get_enum(h, fsd) == 0, "and stops it too");
+
+    test_group("1.5.1 cmdit_continue_on_error: dispatch and verb handles");
+    h = cv_handle(0);
+    av = tav("--bogus", "run", "--root=/x", 0, 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "off: dispatch stops at the bad flag");
+    assert(cmdit_verb_matched(h) == 0 - 1 && cmdit_get_str(h, cv_root) == 0, "before the verb and the global");
+    h = cv_handle(1);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "on: dispatch still fails");
+    assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN, "with the bad flag as the error");
+    assert(cmdit_verb_matched(h) == 0, "on: the verb after it is matched");
+    assert(cstreq(cmdit_get_str(h, cv_root), "/x") == 1, "on: and the global after that is applied");
+    assert(cmdit_verb_argc(h) == 1 && cstreq(load64(cmdit_verb_argv(h)), "run") == 1, "the remainder is well-formed");
+    assert(load64(cmdit_verb_argv(h) + 8) == 0, "and NULL-terminated");
+    h = cv_handle(1);
+    av = tav("--bogus", "--help", 0, 0, 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "dispatch: an error outranks help");
+    h = cv_handle(1);
+    av = tav("--bogus", "-V", 0, 0, 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "and version");
+    h = cv_handle(1);
+    av = tav("--help", 0, 0, 0, 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_HELP, "dispatch: with nothing bad, help is still help");
+    h = cv_handle(1);
+    av = tav("nope", "--root=/x", "run", 0, 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "an unknown verb still fails");
+    assert(cmdit_error(h) == CMDIT_ERR_UNKNOWN_VERB, "as UNKNOWN_VERB");
+    assert(cstreq(cmdit_err_token(h), "nope") == 1, "naming it");
+    assert(cmdit_verb_matched(h) == 0 - 1, "and `run` after it is not taken for the verb");
+    assert(cstreq(cmdit_get_str(h, cv_root), "/x") == 1, "a global after it still applies");
+    assert(cmdit_verb_argc(h) == 2 && cstreq(load64(cmdit_verb_argv(h)), "nope") == 1,
+      "the remainder holds what the verb's slot held");
+    h = cv_handle(0);
+    av = tav("nope", "--root=/x", 0, 0, 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR && cmdit_get_str(h, cv_root) == 0,
+      "off: an unknown verb stops the dispatch");
+    h = cv_handle(1);
+    av = tav("run", "--jobs", "abc", "--root=/x", 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR, "a bad global after the verb fails");
+    assert(cmdit_error(h) == CMDIT_ERR_BAD_INT, "as BAD_INT");
+    assert(cstreq(cmdit_get_str(h, cv_root), "/x") == 1, "and the next global is reached");
+    assert(cmdit_verb_argc(h) == 1, "its value does not fall into the remainder");
+    h = cv_handle(0);
+    av = tav("run", "--jobs", "abc", "--root=/x", 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_RESULT_ERR && cmdit_get_str(h, cv_root) == 0,
+      "off: that bad global stops the dispatch");
+    h = cv_handle(0);
+    av = tav("run", "--side=right", "--bogus", 0, 0);
+    assert(cmdit_dispatch_argv(h, tav_n, av) == CMDIT_OK, "the parent's handle stays clean");
+    var vh = ce_handle(1);
+    assert(cmdit_parse_verb(vh, h) == CMDIT_RESULT_ERR, "a verb handle with the mode on fails the same way");
+    assert(cmdit_error(vh) == CMDIT_ERR_UNKNOWN, "keeping its first error");
+    assert(cmdit_get_enum(vh, ce_side) == 1, "with what it understood");
+    return 0;
+}
+
+# The flag table the verb-less scripts are pinned against: a bool, an enum, a str whose
+# help holds what _arguments reads, an int, and a repeat with a second long name.
+fn vl_handle(): i64 {
+    var h = cmdit_new("t");
+    cmdit_bool(h, 110, "number", "number the lines");
+    cmdit_enum(h, 99, "color", "auto", "auto|always|never", "when to colour");
+    cmdit_str(h, 111, "output", 0, "write: to [here]");
+    cmdit_int(h, 106, "jobs", 4, "");
+    var r = cmdit_repeat(h, 72, "header", "it's a back\\slash\\");
+    cmdit_long_alias(h, r, "hdr");
+    return h;
+}
+
+# 1.5.1 completion scripts for a tool with no verbs (owl)
+fn g118_1_5_1_verbless_completions(): i64 {
+    test_group("1.5.1 which tools take the verb-less shape");
+    var h = cmdit_new("t");
+    assert(_cmdit_offers_verbs(h) == 0, "no verbs: nothing to offer");
+    var v0 = cmdit_verb(h, "secret", "");
+    assert(_cmdit_offers_verbs(h) == 1, "a visible verb is one");
+    cmdit_verb_alias(h, v0, "shh");
+    cmdit_verb_hidden(h, v0);
+    assert(_cmdit_offers_verbs(h) == 0, "every verb hidden, its alias with it: nothing");
+    cmdit_verb(h, "a b", "");
+    assert(_cmdit_offers_verbs(h) == 0, "a name the whitelist drops offers nothing either");
+    cmdit_verb(h, "run", "");
+    assert(_cmdit_offers_verbs(h) == 1, "one visible verb among them turns the verb shape back on");
+    assert(_cmdit_offers_verbs(0) == 0, "a 0 handle has no verbs to offer");
+
+    var b = alloc(16384);
+    test_group("1.5.1 bash, a tool with no verbs");
+    h = vl_handle();
+    capture_completions(h, "bash", b, 16384);
+    assert(contains(b, "verbs") == 0, "no verb list");
+    assert(contains(b, "seen_verb") == 0, "no verb walk");
+    assert(contains(b, "valueflags") == 0, "and nothing for it to skip");
+    assert(has_file_branch(b) == 1, "the 1.5.0 file branch, whole");
+    assert(contains(b, "    local flags='--help --version --number --color --output --jobs --header --hdr'\n") == 1,
+      "the flag list");
+    var arm = cat2("        --color|-c) COMPREPLY=( $(compgen -W 'auto always never' ",
+      "-- \"$cur\") ); return 0 ;;\n");
+    assert(contains(b, arm) == 1, "an enum's choices, under both spellings");
+    assert(contains(b, "|--hdr") == 0 && contains(b, "--output|") == 0, "only an enum has an arm");
+    assert(index_of(b, "esac\n") < index_of(b, "compopt"), "choices come before the file branch");
+    assert(index_of(b, "compgen -W \"$flags\"") < index_of(b, "local prev"), "and after the flags");
+    h = cmdit_new("t");
+    cmdit_bool(h, 0, "plain", "");
+    capture_completions(h, "bash", b, 16384);
+    assert(contains(b, "case") == 0 && contains(b, "esac") == 0, "no enum: no case at all");
+    assert(contains(b, "prev") == 0, "and nothing that looks back a word");
+
+    # Run it. The issue's table, then what it did not reach.
+    h = vl_handle();
+    capture_completions(h, "bash", b, 16384);
+    var drv = alloc(2048);
+    store8(drv, 0);
+    cat_cstr(drv, "D=$(mktemp -d) || exit 3\ncd \"$D\" || exit 3\n");
+    cat_cstr(drv, ": > alpha.txt; : > beta.rs; : > 'my file.txt'\n");
+    cat_cstr(drv, "cfr() {\n    COMP_WORDS=(t \"$@\"); COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 ))\n    COMPREPLY=()\n");
+    cat_cstr(drv, "    _t_complete\n    printf '%s:' \"${#COMPREPLY[@]}\"\n");
+    cat_cstr(drv, "    printf '%s\\n' \"${COMPREPLY[@]}\" | LC_ALL=C sort |\n");
+    cat_cstr(drv, "        while IFS= read -r c; do printf '[%s]' \"$c\"; done\n    printf '\\n'\n}\n");
+    cat_cstr(drv, "printf 'BEGIN\\n'\n");
+    cat_cstr(drv, "cfr ''\ncfr al\ncfr -n al\ncfr alpha.txt b\ncfr my\n");
+    cat_cstr(drv, "cfr --col\ncfr --color ''\ncfr --color a\ncfr -c n\n");
+    cat_cstr(drv, "cfr --color =\ncfr --color = a\ncfr --output =\ncfr --output = al\ncfr --output al\n");
+    cat_cstr(drv, "printf 'END\\n'\ncd / && rm -rf \"$D\"\n");
+    var rbo = alloc(4096);
+    var rbn = run_bash(b, drv, rbo, 4096);
+    if (rbn < 0) {
+        println("  (skipped the bash run: no /bin/bash)");
+    } else {
+        var want = alloc(1024);
+        store8(want, 0);
+        cat_cstr(want, "BEGIN\n3:[alpha.txt][beta.rs][my file.txt]\n1:[alpha.txt]\n1:[alpha.txt]\n1:[beta.rs]\n");
+        cat_cstr(want, "1:[my file.txt]\n1:[--color]\n3:[always][auto][never]\n2:[always][auto]\n1:[never]\n");
+        cat_cstr(want, "3:[always][auto][never]\n2:[always][auto]\n3:[alpha.txt][beta.rs][my file.txt]\n");
+        cat_cstr(want, "1:[alpha.txt]\n1:[alpha.txt]\nEND\n");
+        assert(cstreq(rbo, want) == 1, "bash, run: the first argument completes, and so does every position after it");
+    }
+
+    test_group("1.5.1 zsh, a tool with no verbs");
+    h = vl_handle();
+    capture_completions(h, "zsh", b, 16384);
+    var wz = alloc(1024);
+    store8(wz, 0);
+    cat_cstr(wz, "#compdef t\n_t() {\n    _arguments -S \\\n");
+    cat_cstr(wz, "        '-h[show this help and exit]' \\\n        '--help[show this help and exit]' \\\n");
+    cat_cstr(wz, "        '-V[print version and exit]' \\\n        '--version[print version and exit]' \\\n");
+    cat_cstr(wz, "        '-n[number the lines]' \\\n        '--number[number the lines]' \\\n");
+    cat_cstr(wz, "        '-c[when to colour]:value:(auto always never)' \\\n");
+    cat_cstr(wz, "        '--color=[when to colour]:value:(auto always never)' \\\n");
+    cat_cstr(wz, "        '-o[write\\: to \\[here\\]]:value:_files' \\\n");
+    cat_cstr(wz, "        '--output=[write\\: to \\[here\\]]:value:_files' \\\n");
+    cat_cstr(wz, "        '-j:value: ' \\\n        '--jobs=:value: ' \\\n");
+    cat_cstr(wz, "        '*-H[it'\\''s a back\\\\slash\\\\]:value:_files' \\\n");
+    cat_cstr(wz, "        '*--header=[it'\\''s a back\\\\slash\\\\]:value:_files' \\\n");
+    cat_cstr(wz, "        '*--hdr=[it'\\''s a back\\\\slash\\\\]:value:_files' \\\n");
+    cat_cstr(wz, "        '*:file:_files'\n}\n_t \"$@\"\n");
+    assert(cstreq(b, wz) == 1, "the script, whole");
+    # Source it under a stub _arguments, so what the SHELL delivers is what is checked:
+    # the quoting has to survive zsh's own parse.
+    var zo = alloc(4096);
+    var stub = "_arguments() { print -rl -- \"$@\" }\n";
+    var zn = run_shell("/bin/zsh", "-f", stub, b, zo, 4096);
+    if (zn < 0) {
+        println("  (skipped the zsh run: no /bin/zsh)");
+    } else {
+        assert(contains(zo, "-S\n-h[show this help and exit]\n") == 1, "zsh, run: _arguments gets -S and the flags");
+        assert(contains(zo, "\n--output=[write\\: to \\[here\\]]:value:_files\n") == 1,
+          "zsh, run: the help arrives escaped");
+        assert(contains(zo, "\n*--header=[it's a back\\\\slash\\\\]:value:_files\n") == 1,
+          "zsh, run: an apostrophe and a trailing backslash survive the quoting");
+        assert(contains(zo, "\n--jobs=:value: \n") == 1, "zsh, run: an int keeps its single-space action");
+        assert(contains(zo, "\n*:file:_files\n") == 1, "zsh, run: files come last");
+    }
+
+    test_group("1.5.1 fish, a tool with no verbs");
+    h = vl_handle();
+    capture_completions(h, "fish", b, 16384);
+    var wf = alloc(1024);
+    store8(wf, 0);
+    cat_cstr(wf, "# fish completion for t\n");
+    cat_cstr(wf, "complete -c t -s h -l help -d 'show this help and exit'\n");
+    cat_cstr(wf, "complete -c t -s V -l version -d 'print version and exit'\n");
+    cat_cstr(wf, "complete -c t -s n -l number -d 'number the lines'\n");
+    cat_cstr(wf, "complete -c t -s c -l color -x -a 'auto always never' -d 'when to colour'\n");
+    cat_cstr(wf, "complete -c t -s o -l output -r -d 'write: to [here]'\n");
+    cat_cstr(wf, "complete -c t -s j -l jobs -r -d ''\n");
+    cat_cstr(wf, "complete -c t -s H -l header -r -d 'it'\\''s a back\\\\slash\\\\'\n");
+    cat_cstr(wf, "complete -c t -l hdr -r -d 'it'\\''s a back\\\\slash\\\\'\n");
+    assert(cstreq(b, wf) == 1, "the script, whole: no global -f, one line per flag");
+
+    test_group("1.5.1 only verified names and choices reach a script");
+    h = cmdit_new("t");
+    cmdit_enum(h, 0, "mode", 0, "ok|$(touch x)|`y`|a b||good", "");
+    cmdit_enum(h, 0, "none", 0, "$(a)|`b`", "");
+    cmdit_enum(h, 0, "a b", 0, "x|y", "");
+    capture_completions(h, "bash", b, 16384);
+    assert(contains(b, "--mode) COMPREPLY=( $(compgen -W 'ok good' -- \"$cur\") )") == 1,
+      "bash: the safe choices only");
+    assert(contains(b, "touch") == 0 && contains(b, "`") == 0, "bash: a choice that would run at TAB is dropped");
+    assert(contains(b, "--none") == 1 && contains(b, "--none)") == 0, "bash: no safe choice, no arm");
+    assert(contains(b, "x y") == 0 && contains(b, ") COMPREPLY=( $(compgen -W 'x") == 0, "bash: no safe name, no arm");
+    drv = "printf 'SOURCED\\n'\n";
+    rbn = run_bash(b, drv, rbo, 4096);
+    if (rbn >= 0) { assert(contains(rbo, "SOURCED") == 1, "bash, run: the script parses"); }
+    capture_completions(h, "zsh", b, 16384);
+    assert(contains(b, "'--mode=:value:(ok good)'") == 1, "zsh: the safe choices only");
+    assert(contains(b, "touch") == 0 && contains(b, "`") == 0, "zsh: _arguments evals (...), so the rest are dropped");
+    assert(contains(b, "'--none=:value: '") == 1, "zsh: no safe choice is a value with nothing to offer");
+    assert(contains(b, "a b") == 0, "zsh: an unsafe name is dropped");
+    capture_completions(h, "fish", b, 16384);
+    assert(contains(b, "complete -c t -l mode -x -a 'ok good' -d ''\n") == 1, "fish: the safe choices only");
+    assert(contains(b, "touch") == 0 && contains(b, "`") == 0, "fish: -a is expanded, so the rest are dropped");
+    assert(contains(b, "complete -c t -l none -r -d ''\n") == 1, "fish: no safe choice is a plain value flag");
+    assert(contains(b, "a b") == 0, "fish: an unsafe name is dropped");
+    h = cmdit_new("t");
+    cmdit_enum(h, 99, "a b", 0, "x|y", "");
+    capture_completions(h, "bash", b, 16384);
+    assert(contains(b, "        -c) COMPREPLY") == 1, "a flag the whitelist drops the long name of keeps its short");
+    h = cmdit_new("t");
+    var fa = cmdit_enum(h, 0, "a b", 0, "x|y", "");
+    cmdit_long_alias(h, fa, "okay");
+    capture_completions(h, "bash", b, 16384);
+    assert(contains(b, "        --okay) COMPREPLY") == 1, "and a second long name can carry the arm alone");
+
+    test_group("1.5.1 a tool with a verb keeps its 1.5.0 script");
+    h = cmdit_new("t");
+    cmdit_enum(h, 99, "color", "auto", "auto|always|never", "when");
+    cmdit_verb(h, "run", "go");
+    capture_completions(h, "bash", b, 16384);
+    assert(contains(b, "local cur i w seen_verb=0 skip=0\n") == 1, "bash: the verb walk");
+    assert(contains(b, "local verbs='run'\n") == 1, "bash: the verb list");
+    assert(contains(b, "COMPREPLY=( $(compgen -W 'auto") == 0, "bash: no enum arm");
+    capture_completions(h, "zsh", b, 16384);
+    assert(contains(b, "_describe -t commands 'command' verbs\n") == 1, "zsh: _describe");
+    assert(contains(b, "_arguments") == 0, "zsh: no _arguments");
+    capture_completions(h, "fish", b, 16384);
+    assert(contains(b, "complete -c t -f\n") == 1, "fish: the global -f");
+    assert(contains(b, "complete -c t -n __fish_use_subcommand -a 'run' -d 'go'\n") == 1, "fish: the verb");
+    assert(contains(b, "-x -a") == 0, "fish: no enum choices");
+    var vt = cmdit_new("t");
+    var vr = cmdit_verb(vt, "run", "go");
+    var vth = cmdit_new("t run");
+    cmdit_enum(vth, 0, "mode", 0, "a|b", "how");
+    cmdit_verb_flags(vt, vr, vth);
+    capture_completions(vt, "fish", b, 16384);
+    assert(contains(b, "complete -c t -n '__fish_seen_subcommand_from run' -l mode -r -d 'how'\n") == 1,
+      "fish: a per-verb enum line is unchanged");
+    # Hidden verbs only: the shape follows what can be offered, not what is registered.
+    h = cmdit_new("t");
+    var hv = cmdit_verb(h, "secret", "");
+    cmdit_verb_hidden(h, hv);
+    capture_completions(h, "bash", b, 16384);
+    assert(contains(b, "seen_verb") == 0 && has_file_branch(b) == 1, "bash: hidden verbs only -> verb-less");
+    capture_completions(h, "zsh", b, 16384);
+    assert(contains(b, "_arguments -S") == 1 && contains(b, "secret") == 0, "zsh: the same");
+    capture_completions(h, "fish", b, 16384);
+    assert(contains(b, " -f\n") == 0 && contains(b, "secret") == 0, "fish: the same");
+    return 0;
+}
+
 # Run every test group against the pure parse/dispatch cores and the renderers. 1.4.0:
 # each group is its own function, so a fixture name no longer has to be unique across
 # the whole suite (one shared main made every collision a build error).
@@ -3380,6 +4106,9 @@ fn main() {
     g113_1_4_0_long_name_lookup();
     g114_1_4_2_argv_past_2_mib();
     g115_1_5_0_completion_files();
+    g116_1_5_1_escaper_c1();
+    g117_1_5_1_continue_on_error();
+    g118_1_5_1_verbless_completions();
     return assert_summary();
 }
 
